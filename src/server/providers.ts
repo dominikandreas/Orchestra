@@ -98,4 +98,16 @@ export async function runtime(id?:string){
  return r;
 }
 export function usable(connectionId:string,userId:string,projectId:string){const c=get('connections',connectionId);return c&&c.status==='connected'&&(c.ownerId===userId||c.shared&&(c.projects||[]).includes(projectId))?c:undefined;}
-export const safeConnection=(c:any)=>{const {secret,...safe}=c;return safe;};
+export function safeConnection(c:any,r?:any){
+ const {secret,...safe}=c;
+ if(safe.config?.models?.length){
+  safe.models=safe.config.models;
+ }else if(r){
+  try{
+   safe.models=r.getModels(safe.provider).map((m:any)=>({id:m.id,name:m.name}));
+  }catch{
+   safe.models=[];
+  }
+ }
+ return safe;
+}

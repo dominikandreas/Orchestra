@@ -32,7 +32,23 @@ export async function createApp(){const app=Fastify({logger:false,forceCloseConn
  const attempts=new Map<string,{n:number,until:number}>();
  app.post('/api/redeem',async(req,reply)=>{const key=req.ip,prev=attempts.get(key);if(prev&&prev.until>Date.now()&&prev.n>=20)return reply.code(429).send({error:'Too many attempts. Try again in a minute.'});attempts.set(key,{n:prev&&prev.until>Date.now()?prev.n+1:1,until:Date.now()+60000});const b=body(req,z.object({token:str,name:z.string().trim().min(1).max(80)}));return redeemInvite(b.token,b.name)});
  app.get('/api/me',(req:any)=>({user:req.user,deviceId:req.device.id}));
- app.get('/api/state',(req)=>{const u=user(req);const visible=(x:Row)=>canProject(u,x.projectId);return {projects:all('projects').filter(p=>canProject(u,p.id)),repos:all('repos').filter(visible),changes:all('changes').filter(visible),jobs:all('jobs').filter(visible),workflows:all('workflows').filter(visible),previews:all('previews').filter(visible),resources:all('resources').filter(visible),connections:all('connections').filter(c=>c.ownerId===u.id||admin(u)||c.shared&&(c.projects||[]).some((p:string)=>canProject(u,p))).map(safeConnection)};});
+ app.get('/api/state',async(req)=>{
+  const u=user(req);
+  const visible=(x:Row)=>canProject(u,x.projectId);
+  const r=await runtime();
+  const providers=r.getProviders().map(p=>({id:p.id,name:p.name,methods:r.hasConfiguredAuth(p.id)||(p as any).baseUrl?.startsWith('cli:')?[]:[...(p.auth.apiKey?.login?['api_key']:[]),...(p.auth.oauth?['oauth']:[])],models:r.getModels(p.id).map(m=>({id:m.id,name:m.name}))}));
+  return {
+   projects:all('projects').filter(p=>canProject(u,p.id)),
+   repos:all('repos').filter(visible),
+   changes:all('changes').filter(visible),
+   jobs:all('jobs').filter(visible),
+   workflows:all('workflows').filter(visible),
+   previews:all('previews').filter(visible),
+   resources:all('resources').filter(visible),
+   connections:all('connections').filter(c=>c.ownerId===u.id||admin(u)||c.shared&&(c.projects||[]).some((p:string)=>canProject(u,p))).map(c=>safeConnection(c,r)),
+   providers
+  };
+ });
  app.post('/api/projects',req=>{needAdmin(req);return put('projects',body(req,z.object({name:str,description:z.string().max(2000).default('')})))});
  app.post('/api/repos',async req=>{needAdmin(req);const b=body(req,z.object({projectId:id,name:str,source:str,base:z.string().optional()}));entity(req,'projects',b.projectId,true);return importRepository(b.source,b.name,b.projectId,b.base)});
  app.get('/api/repos/:id/inspect',async(req:any)=>{const r=entity(req,'repos',req.params.id);let scripts:any={};try{scripts=JSON.parse(await git(r.path,'show',`${r.base}:package.json`)).scripts||{}}catch{}return {branches:await branches(r),scripts,suggestions:{testCommand:scripts.test?'npm ci && npm test':'',previewCommand:scripts.dev?'npm ci && npm run dev -- --host 0.0.0.0':''}}});
@@ -57,7 +73,7 @@ export async function createApp(){const app=Fastify({logger:false,forceCloseConn
  app.patch('/api/workflows/:id',(req:any)=>{entity(req,'workflows',req.params.id,true);return put('workflows',{id:req.params.id,...body(req,z.object({enabled:z.boolean()}))});});
  app.get('/api/providers',async()=>{const r=await runtime();return r.getProviders().map(p=>({id:p.id,name:p.name,methods:r.hasConfiguredAuth(p.id)||(p as any).baseUrl?.startsWith('cli:')?[]:[...(p.auth.apiKey?.login?['api_key']:[]),...(p.auth.oauth?['oauth']:[])],models:r.getModels(p.id).map(m=>({id:m.id,name:m.name}))}));});
  const logins=new Map<string,any>();
- app.post('/api/connections',async req=>{const b=body(req,z.object({name:str,provider:str,shared:z.boolean().default(false),projects:z.array(id).default([]),config:z.object({name:str,baseUrl:z.url(),api:z.enum(['openai-completions','openai-responses','anthropic-messages','google-generative-ai']),models:z.array(z.object({id:str,name:str,reasoning:z.boolean().default(false),input:z.array(z.enum(['text','image'])).default(['text']),contextWindow:z.number().positive().default(128000),maxTokens:z.number().positive().default(8192),cost:z.object({input:z.number(),output:z.number(),cacheRead:z.number(),cacheWrite:z.number()}).default({input:0,output:0,cacheRead:0,cacheWrite:0})})).min(1)}).optional()}));if(b.config)needAdmin(req);if(b.shared)needAdmin(req);for(const p of b.projects)entity(req,'projects',p);const r=await runtime();const isAutoConnected=r.hasConfiguredAuth(b.provider)||(!b.config&&(r.getProvider(b.provider) as any)?.baseUrl?.startsWith('cli:'));return safeConnection(put('connections',{...b,ownerId:user(req).id,status:isAutoConnected?'connected':'disconnected'}));});
+ app.post('/api/connections',async req=>{const b=body(req,z.object({name:str,provider:str,shared:z.boolean().default(false),projects:z.array(id).default([]),config:z.object({name:str,baseUrl:z.url(),api:z.enum(['openai-completions','openai-responses','anthropic-messages','google-generative-ai']),models:z.array(z.object({id:str,name:str,reasoning:z.boolean().default(false),input:z.array(z.enum(['text','image'])).default(['text']),contextWindow:z.number().positive().default(128000),maxTokens:z.number().positive().default(8192),cost:z.object({input:z.number(),output:z.number(),cacheRead:z.number(),cacheWrite:z.number()}).default({input:0,output:0,cacheRead:0,cacheWrite:0})})).min(1)}).optional()}));if(b.config)needAdmin(req);if(b.shared)needAdmin(req);for(const p of b.projects)entity(req,'projects',p);const r=await runtime();const isAutoConnected=r.hasConfiguredAuth(b.provider)||(!b.config&&(r.getProvider(b.provider) as any)?.baseUrl?.startsWith('cli:'));return safeConnection(put('connections',{...b,ownerId:user(req).id,status:isAutoConnected?'connected':'disconnected'}),r);});
  const connection=(req:any)=>{const c=get('connections',req.params.id);if(!c||c.ownerId!==user(req).id&&!admin(user(req)))throw Error('Connection access denied');return c;};
  app.delete('/api/connections/:id',(req:any)=>{const c=connection(req);logins.get(c.id)?.abort.abort();logins.delete(c.id);del('connections',c.id);return {ok:true}});
  app.post('/api/connections/:id/cancel-login',(req:any)=>{const c=connection(req),b=body(req,z.object({discard:z.boolean().default(false)}));logins.get(c.id)?.abort.abort();logins.delete(c.id);if(b.discard&&!c.secret)del('connections',c.id);return {ok:true};});

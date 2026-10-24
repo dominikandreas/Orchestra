@@ -26,6 +26,17 @@ test('automation events deduplicate and suppress their originating workflow',asy
 test('provider catalog is Pi-backed and self-update APIs require admin',async()=>{const r=await request('GET','/api/providers',ownerToken);assert.equal(r.statusCode,200);assert.ok(r.json().some((p:any)=>p.id==='anthropic'&&p.models.length));assert.equal((await request('GET','/api/self',viewerToken)).statusCode,400);assert.equal((await request('POST','/api/self/restart',viewerToken,{})).statusCode,400);const restartRes=await request('POST','/api/self/restart',ownerToken,{});assert.equal(restartRes.statusCode,200);assert.equal(restartRes.json().ok,true);assert.ok(store.all('audit').some(a=>a.action==='app.restart'&&a.actor===owner.id));});
 test('known provider secrets are redacted from event streams',()=>{store.put('connections',{secret:store.encrypt({key:'fixture-super-secret',type:'api_key'})});store.event('redaction','error','Failed with key fixture-super-secret');assert.equal(store.events('redaction')[0].data,'Failed with key [REDACTED]');});
 
+test('state endpoint includes providers catalog and connection models',async()=>{
+ const conn=store.put('connections',{name:'Custom Provider',ownerId:owner.id,provider:'custom-test',status:'connected',config:{name:'Custom',baseUrl:'http://localhost:11434/v1',api:'openai-completions',models:[{id:'model-1',name:'Model 1'}]}});
+ const res=await request('GET','/api/state',ownerToken);
+ assert.equal(res.statusCode,200);
+ const json=res.json();
+ assert.ok(Array.isArray(json.providers)&&json.providers.length>0);
+ const found=json.connections.find((c:any)=>c.id===conn.id);
+ assert.ok(found);
+ assert.ok(Array.isArray(found.models)&&found.models.length===1);
+ assert.equal(found.models[0].id,'model-1');
+});
 
 test('provider login supplies a persistent installation UUID and supports retry after failure',async(t)=>{
  const {ModelRuntime}=await import('@earendil-works/pi-coding-agent');

@@ -7,6 +7,7 @@ import { DefaultPackageManager,SettingsManager } from '@earendil-works/pi-coding
 import { z } from 'zod';
 import { all,get,put,admin,audit,dataDir,hash,transaction,redact,type Row } from './store.js';
 import { activateDeployment,rollbackDeployment } from './self.js';
+import { invalidateExtensionProvidersCache,ensureDefaultConnections } from './providers.js';
 export const adminDir=join(dataDir,'admin-pi');
 export function requireAdministrator(userId:string){const user=get('users',userId);if(!user||user.disabled||!admin(user))throw Error('Active administrator access required');return user;}
 const text=z.string().trim().min(1);
@@ -32,10 +33,10 @@ async function performAction(row:Row){try{requireAdministrator(row.authorId);req
  else if(a.kind==='plugin_install'||a.kind==='plugin_update'||a.kind==='plugin_remove'){
   await mkdir(adminDir,{recursive:true,mode:0o700});const pm=packageManager();pm.setProgressCallback(e=>put('adminActions',{id:row.id,log:redact(((get('adminActions',row.id)?.log||'')+'\n'+(e.message||e.action)).slice(-50000))}));
   if(a.kind==='plugin_install')await pm.installAndPersist(a.source);else if(a.kind==='plugin_update')await pm.update(a.source);else await pm.removeAndPersist(a.source);
-  const old=all('adminPlugins').find(p=>p.kind==='package'&&p.source===a.source);put('adminPlugins',{...(old?{id:old.id}:{}),name:a.source,source:a.source,kind:'package',status:a.kind==='plugin_remove'?'removed':'enabled',authorId:row.authorId});result='Pi package '+a.kind.replace('plugin_','')+' completed. Changes apply to the next chat turn.';
+  const old=all('adminPlugins').find(p=>p.kind==='package'&&p.source===a.source);put('adminPlugins',{...(old?{id:old.id}:{}),name:a.source,source:a.source,kind:'package',status:a.kind==='plugin_remove'?'removed':'enabled',authorId:row.authorId});invalidateExtensionProvidersCache();ensureDefaultConnections();result='Pi package '+a.kind.replace('plugin_','')+' completed. Changes apply to the next chat turn.';
  }else if(a.kind==='extension_enable'||a.kind==='extension_disable'){
   const p=get('adminPlugins',a.pluginId);if(!p||p.digest!==a.digest)throw Error('Extension changed; request a new approval');
-  if(a.kind==='extension_enable'){await mkdir(join(adminDir,'extensions-approved'),{recursive:true,mode:0o700});const path=join(adminDir,'extensions-approved',p.id+'.ts');await writeFile(path,p.content,{mode:0o600});put('adminPlugins',{id:p.id,path,status:'enabled'});}else put('adminPlugins',{id:p.id,status:'disabled'});result='Extension '+(a.kind==='extension_enable'?'enabled':'disabled')+' for subsequent admin turns.';
+  if(a.kind==='extension_enable'){await mkdir(join(adminDir,'extensions-approved'),{recursive:true,mode:0o700});const path=join(adminDir,'extensions-approved',p.id+'.ts');await writeFile(path,p.content,{mode:0o600});put('adminPlugins',{id:p.id,path,status:'enabled'});}else put('adminPlugins',{id:p.id,status:'disabled'});invalidateExtensionProvidersCache();ensureDefaultConnections();result='Extension '+(a.kind==='extension_enable'?'enabled':'disabled')+' for subsequent admin turns.';
  }else if(a.kind==='deploy'){const d=get('deployments',a.deploymentId);if(d?.sha!==a.sha)throw Error('Release changed; request a new approval');result=await activateDeployment(a.deploymentId,row.approvedBy);}
  else if(a.kind==='rollback'){const {readFile}=await import('node:fs/promises');if(hash(await readFile(join(dataDir,'active-release.json'),'utf8'))!==a.selection)throw Error('Active release changed; request rollback again');result=await rollbackDeployment(row.approvedBy);}
  else if(a.kind==='merge'){const c=get('changes',a.changeId);if(!c||c.sourceSha!==a.sourceSha||c.targetSha!==a.targetSha)throw Error('Change revisions changed; request approval again');result=await mergeChange(c.id,{sourceSha:a.sourceSha,targetSha:a.targetSha,force:{actorId:row.approvedBy,reason:row.reason}});}

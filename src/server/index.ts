@@ -3,6 +3,7 @@ import { createApp } from './app.js';
 import { startQueue,shutdownJobs } from './jobs.js';
 import { servePreviews } from './previews.js';
 import { all,issueInvite,dataDir,put } from './store.js';
+import { ensureDefaultConnections } from './providers.js';
 import { writeFileSync,existsSync,readFileSync } from 'node:fs';
 import { stopSandbox } from './docker.js';
 import { join } from 'node:path';
@@ -11,6 +12,7 @@ for(const j of all('jobs').filter(j=>j.status==='running')){await stopSandbox(`r
 for(const d of all('deployments').filter(d=>d.status==='building')){await stopSandbox(`relay-release-${d.id}`);put('deployments',{id:d.id,status:'failed',error:'Build interrupted by restart'});}
 for(const p of all('previews').filter(p=>p.status==='starting')){await stopSandbox(`relay-preview-${p.id}`);put('previews',{id:p.id,status:'failed',error:'Preview startup interrupted'});}
 recoverAdminRuns();
+ensureDefaultConnections();
 const app=await createApp();await app.listen({host,port});const previewServer=servePreviews(host);startQueue();
 const url=process.env.RELAY_BASE_URL||`${process.env.RELAY_TLS_CERT?'https':'http'}://localhost:${port}`;
 console.log(`Orchestra is running at ${url}`);

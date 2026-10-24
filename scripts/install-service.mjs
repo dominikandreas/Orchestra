@@ -1,0 +1,12 @@
+import { existsSync } from 'node:fs';
+import { mkdir,writeFile } from 'node:fs/promises';
+import { homedir,networkInterfaces } from 'node:os';
+import { resolve,join } from 'node:path';
+import { execFileSync } from 'node:child_process';
+const root=resolve('.'),data=resolve(process.env.ORCHESTRA_DATA_DIR||process.env.RELAY_DATA_DIR||join(root,'.data')),unitDir=join(homedir(),'.config/systemd/user');
+await mkdir(unitDir,{recursive:true});await mkdir(data,{recursive:true,mode:0o700});
+const ip=Object.values(networkInterfaces()).flat().find(i=>i?.family==='IPv4'&&!i.internal&&!i.address.startsWith('172.')&&!i.address.startsWith('100.'))?.address||'localhost';
+const base=process.env.ORCHESTRA_BASE_URL||process.env.RELAY_BASE_URL||`http://${ip}:4310`;
+const quote=v=>'"'+v.replaceAll('\\','\\\\').replaceAll('"','\\"').replaceAll('%','%%')+'"';
+const unit=`[Unit]\nDescription=Orchestra Git and Pi workspace\nAfter=network.target docker.service\n\n[Service]\nType=simple\nWorkingDirectory=${root.replaceAll('%','%%')}\nExecStart=${quote(process.execPath)} ${quote(join(root,'scripts/launch.mjs'))}\nEnvironment=${quote('ORCHESTRA_DATA_DIR='+data)}\nEnvironment=${quote('ORCHESTRA_BASE_URL='+base)}\nEnvironment=${quote('PATH='+process.env.PATH)}\nEnvironment=NODE_ENV=production\nUMask=0077\nRestart=on-failure\nRestartSec=3\nTimeoutStopSec=15\n\n[Install]\nWantedBy=default.target\n`;
+await writeFile(join(unitDir,'orchestra-workspace.service'),unit);execFileSync('systemd-analyze',['--user','verify',join(unitDir,'orchestra-workspace.service')],{stdio:'inherit'});execFileSync('systemctl',['--user','daemon-reload']);if(existsSync(join(unitDir,'relay-workspace.service')))execFileSync('systemctl',['--user','disable','--now','relay-workspace.service'],{stdio:'inherit'});execFileSync('systemctl',['--user','enable','--now','orchestra-workspace.service'],{stdio:'inherit'});console.log(`Dashboard: ${base}\nSetup link file: ${join(data,'bootstrap-url')}`);

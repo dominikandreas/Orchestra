@@ -67,6 +67,11 @@ export function signalJob(id:string,type:string,text?:string,images?:any[],attac
     event(id,'user',{text,images,attachments,mode:type});
   }else throw Error('Job is not running');
 }
+export function updateJobSettings(id:string,thinkingLevel?:string){
+  if(active.get(id)&&thinkingLevel){
+    active.get(id)!.send({type:'update_settings',thinkingLevel});
+  }
+}
 export async function runTests(job:Row,repo:Row){
  if(!repo.testCommand){if(job.changeId)put('checks',{changeId:job.changeId,sourceSha:job.sourceSha,targetSha:job.targetSha,status:'not_run',jobId:job.id});event(job.id,'notice','No test command configured');return 'not_run';}
  const name=`relay-test-${job.id}`;let log='',path=job.path;
@@ -133,7 +138,7 @@ export async function scanAutomation(){if(scanning)return;scanning=true;try{for(
 export function emitAutomation(trigger:string,c:Row,eventId=''){for(const w of all('workflows').filter(w=>w.enabled&&w.repoId===c.repoId&&w.trigger===trigger)){if(c.originWorkflowId===w.id)continue;const key=`${w.id}:${c.id}:${c.sourceSha}:${c.targetSha}:${eventId}`;if(get('triggers',key))continue;put('triggers',{id:key});const attempts=all('jobs').filter(j=>j.workflowId===w.id&&j.changeId===c.id);if(attempts.length>=3||attempts.some(j=>['queued','running','awaiting_approval'].includes(j.status)))continue;const u=get('users',w.authorId);if(u)try{enqueue({...w,title:w.name,changeId:c.id,workflowId:w.id,attempt:attempts.length+1},u);}catch(e){put('workflows',{id:w.id,error:String(e)});}}}
 export function queueRequestedReview(job:Row,change:Row,user:Row){
  const existing=all('jobs').find(j=>j.parentJobId===job.id&&j.kind==='review'&&j.reviewSourceSha===change.sourceSha&&j.reviewTargetSha===change.targetSha);if(existing)return existing;
- const review=enqueue({repoId:job.repoId,changeId:change.id,title:`Review: ${job.title}`,prompt:'Independently review this change for correctness, regressions, and test coverage. Inspect the diff and record an honest verdict. Approve only when ready to merge.',kind:'review',autonomy:job.autonomy,connectionId:job.connectionId,model:job.model},user);
+ const review=enqueue({repoId:job.repoId,changeId:change.id,title:`Review: ${job.title}`,prompt:'Independently review this change for correctness, regressions, and test coverage. Inspect the diff and record an honest verdict. Approve only when ready to merge.',kind:'review',autonomy:job.autonomy,connectionId:job.connectionId,model:job.model,thinkingLevel:job.thinkingLevel},user);
  return put('jobs',{id:review.id,parentJobId:job.id,adminThreadId:job.adminThreadId,adminRunId:job.adminRunId,reviewSourceSha:change.sourceSha,reviewTargetSha:change.targetSha});
 }
 export async function maybeAutoMerge(changeId:string){const c=get('changes',changeId);if(!c||c.status!=='open')return;const repo=get('repos',c.repoId);if(repo?.autonomy!=='auto'||!repo.testCommand)return;const job=all('jobs').find(j=>j.changeId===c.id&&j.autonomy==='auto'&&j.kind!=='review');if(!job)return;if(job.reviewAfter&&!all('reviews').some(r=>r.changeId===c.id&&r.sourceSha===c.sourceSha&&r.targetSha===c.targetSha&&r.verdict==='approved'&&get('jobs',r.jobId)?.parentJobId===job.id))return;try{await mergeChange(c.id);event(job.id,'notice','Merged automatically after current tests and review gates passed.');}catch{/* Pending gates remain visible on the change request. */}}

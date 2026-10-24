@@ -10,7 +10,7 @@ if(job?.path){try{process.chdir(job.path);}catch{}}
 let session:any;const container=`relay-job-${id}`;
 process.on('disconnect',()=>{void stopSandbox(container).finally(()=>process.exit(0))});
 const send=(type:string,data:any)=>process.send?.({type,data});
-process.on('message',async(m:any)=>{try{if(m.type==='cancel'){await session?.abort();await stopSandbox(container);process.exit(0);}else if(m.type==='steer')await session?.steer(m.text,m.images);else if(m.type==='followup')await session?.followUp(m.text,m.images);}catch(e){send('notice',String(e))}});
+process.on('message',async(m:any)=>{try{if(m.type==='cancel'){await session?.abort();await stopSandbox(container);process.exit(0);}else if(m.type==='update_settings'){if(m.thinkingLevel&&session?.setThinkingLevel)session.setThinkingLevel(m.thinkingLevel);}else if(m.type==='steer')await session?.steer(m.text,m.images);else if(m.type==='followup')await session?.followUp(m.text,m.images);}catch(e){send('notice',String(e))}});
 try {
  await startSandbox(container,job.path,repo.image,job.kind==='review');send('notice','Isolated workspace ready');
  const mr=await runtime(job.connectionId);

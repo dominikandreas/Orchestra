@@ -1,12 +1,48 @@
 import { spawn } from 'node:child_process';
-import { mkdir, realpath } from 'node:fs/promises';
+import { mkdir, realpath, rm } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { dataDir, get, put, all, admin, type Row } from './store.js';
 export async function command(exe:string,args:string[],cwd?:string,timeout=120000):Promise<string>{return new Promise((res,rej)=>{const p=spawn(exe,args,{cwd,env:{...process.env,GIT_TERMINAL_PROMPT:'0'},stdio:['ignore','pipe','pipe']});let out='',err='';const t=setTimeout(()=>{p.kill('SIGKILL');rej(Error(`${exe} timed out`));},timeout);p.stdout.on('data',b=>{out=(out+b).slice(-2000000);});p.stderr.on('data',b=>{err=(err+b).slice(-20000);});p.on('error',e=>{clearTimeout(t);rej(e)});p.on('close',code=>{clearTimeout(t);code===0?res(out.trim()):rej(Error(err||`${exe} exited ${code}`));});});}
 export const git=(cwd:string,...args:string[])=>command('git',['-c','core.hooksPath=/dev/null','-c','protocol.file.allow=always',...args],cwd);
 const locks=new Map<string,Promise<any>>();
 export async function locked<T>(id:string,fn:()=>Promise<T>):Promise<T>{const prev=locks.get(id)||Promise.resolve();const next=prev.catch(()=>{}).then(fn);locks.set(id,next);try{return await next;}finally{if(locks.get(id)===next)locks.delete(id);}}
-export async function importRepository(source:string,name:string,projectId:string,base?:string){if(source.startsWith('-'))throw Error('Invalid repository location');if(!/^(https:\/\/|ssh:\/\/|git@)/.test(source))source=await realpath(resolve(source));const row=put('repos',{name,projectId,source,status:'importing',autonomy:'prepare',requireReview:true,testCommand:'',previewCommand:'',image:'node:24-bookworm',port:5173});const path=join(dataDir,'repos',row.id);try{await mkdir(join(dataDir,'repos'),{recursive:true});await command('git',['clone','--bare','--no-hardlinks','--',source,path],undefined,180000);await git(path,'config','user.name','Orchestra');await git(path,'config','user.email','orchestra@localhost');const current=base||await git(path,'branch','--show-current');await git(path,'rev-parse','--verify',`${current}^{commit}`);return put('repos',{...row,path,base:current,status:'ready'});}catch(e){put('repos',{...row,status:'error',error:String(e)});throw e;}}
+export async function importRepository(source:string,name:string,projectId:string,base?:string){
+ if(source.startsWith('-'))throw Error('Invalid repository location');
+ const isRemote=/^(https:\/\/|ssh:\/\/|git@)/.test(source);
+ if(!isRemote)source=await realpath(resolve(source));
+ const row=put('repos',{name,projectId,source,status:'importing',autonomy:'prepare',requireReview:true,testCommand:'',previewCommand:'',image:'node:24-bookworm',port:5173});
+ const path=join(dataDir,'repos',row.id);
+ try{
+  await mkdir(join(dataDir,'repos'),{recursive:true});
+  await command('git',['clone','--bare','--no-hardlinks','--',source,path],undefined,180000);
+  await git(path,'config','user.name','Orchestra');
+  await git(path,'config','user.email','orchestra@localhost');
+  const current=base||await git(path,'branch','--show-current').catch(()=>'')||'main';
+  const hasCommits=await git(path,'rev-list','-n','1','--all').then(out=>Boolean(out.trim())).catch(()=>false);
+  if(!hasCommits){
+   let treeSha:string;
+   if(!isRemote){
+    try{
+     await command('git',['--git-dir='+path,'--work-tree='+source,'add','-A']);
+     treeSha=await git(path,'write-tree');
+     await rm(join(path,'index'),{force:true}).catch(()=>{});
+    }catch{
+     treeSha=await git(path,'hash-object','-t','tree','/dev/null');
+    }
+   }else{
+    treeSha=await git(path,'hash-object','-t','tree','/dev/null');
+   }
+   const commit=await command('git',['commit-tree',treeSha,'-m','Initial repository commit'],path);
+   await git(path,'update-ref',`refs/heads/${current}`,commit.trim());
+   await git(path,'symbolic-ref','HEAD',`refs/heads/${current}`);
+  }
+  await git(path,'rev-parse','--verify',`${current}^{commit}`);
+  return put('repos',{...row,path,base:current,status:'ready',error:null});
+ }catch(e){
+  put('repos',{...row,status:'error',error:String(e)});
+  throw e;
+ }
+}
 export async function branches(repo:Row){return (await git(repo.path,'for-each-ref','--format=%(refname:short)','refs/heads')).split('\n').filter(Boolean);}
 export async function revision(repo:Row,branch:string){if(branch.startsWith('-')||branch.includes('..'))throw Error('Invalid branch');return git(repo.path,'rev-parse','--verify',`refs/heads/${branch}^{commit}`);}
 export async function createWorktree(repo:Row,id:string,base:string){const path=join(dataDir,'worktrees',id);await mkdir(join(dataDir,'worktrees'),{recursive:true});await git(repo.path,'worktree','add','-b',`relay/${id}`,path,base);return path;}

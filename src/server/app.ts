@@ -1,3 +1,5 @@
+import {adminSnapshot,adminThread,createAdminThread,startAdminTurn,stopAdminTurn} from './admin-agent.js';
+import {proposeAction,decideAction,draftPlugin} from './admin-control.js';
 import Fastify from 'fastify';
 import ts from 'typescript';
 import {registerSelf,prepareDeployment,activateDeployment,rollbackDeployment} from './self.js';
@@ -70,6 +72,14 @@ export async function createApp(){const app=Fastify({logger:false,forceCloseConn
  app.post('/api/self/build',async req=>{needAdmin(req);const b=body(req,z.object({changeId:id}));return prepareDeployment(b.changeId,user(req).id)});
  app.post('/api/self/activate',async req=>{needAdmin(req);const b=body(req,z.object({id}));return activateDeployment(b.id,user(req).id)});
  app.post('/api/self/rollback',async req=>{needAdmin(req);return rollbackDeployment(user(req).id)});
+ app.get('/api/admin',req=>{needAdmin(req);return adminSnapshot(user(req).id)});
+ app.post('/api/admin/threads',req=>{needAdmin(req);return createAdminThread(user(req).id)});
+ app.get('/api/admin/threads/:id',(req:any)=>{needAdmin(req);return adminThread(req.params.id,user(req).id)});
+ app.post('/api/admin/threads/:id/messages',(req:any)=>{needAdmin(req);return startAdminTurn(req.params.id,user(req).id,req.body)});
+ app.post('/api/admin/threads/:id/stop',(req:any)=>{needAdmin(req);return stopAdminTurn(req.params.id,user(req).id)});
+ app.post('/api/admin/actions',req=>{needAdmin(req);const b=body(req,z.object({reason:str,action:z.unknown()}));return proposeAction(user(req).id,b.reason,b.action)});
+ app.post('/api/admin/actions/:id/decision',(req:any)=>{needAdmin(req);const b=body(req,z.object({decision:z.enum(['approve','reject'])}));return decideAction(req.params.id,b.decision,user(req).id)});
+ app.post('/api/admin/plugins',req=>{needAdmin(req);return draftPlugin(user(req).id,body(req,z.object({name:str,content:z.string().min(1).max(200000)})))});
  if(existsSync(resolve('dist')))await app.register(fastifyStatic,{root:resolve('dist')});
  app.setNotFoundHandler((req,reply)=>req.url.startsWith('/api/')?reply.code(404).send({error:'Not found'}):reply.sendFile('index.html'));
  return app;}

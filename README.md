@@ -89,3 +89,16 @@ npm audit
 ```
 
 Core tests cover access control, invite reuse/expiry, device revocation, original-checkout preservation, stale merge gates, approval restrictions, encryption/redaction, and owner protection. The Docker suite runs the actual Pi worker against a deterministic local OpenAI-compatible streaming fixture, executes a tool, commits a change request, and tests the candidate. It does not require or consume a paid provider account.
+
+
+## Admin AI and Pi plugins
+
+Owners and administrators can open **Admin AI** from the bottom-right of any screen. Choose a connected provider and model, then ask about the current project, job, or change request. Context is attached to each message. Conversations, streamed tool activity, and runs survive restarts; interrupted actions are never automatically replayed.
+
+The assistant can inspect changes, start or steer jobs, and request an implementation → test → independent review pipeline. Automatic merges respect the repository's maximum autonomy and require current test/review evidence. An approval request can change repository autonomy or merge a specific reviewed revision. These are local managed change requests; hosted GitHub/GitLab PR synchronization is not implemented.
+
+Ask it to improve Orchestra itself to create a normal `adapt` job against the registered application repository. Follow its diff, tests, and review in **Agent work** or **Admin AI → Admin work**. The assistant can build a merged application change in Docker and request approval to deploy the exact release SHA, or request a rollback. Deployment retains the existing release rollback mechanism.
+
+**Pi plugins** manages packages through Pi's `DefaultPackageManager` and supports custom TypeScript extension drafts. Installation, updates, removal, and enabling/disabling extensions require approval. Extensions are pinned to the draft content digest at approval; package requests show the exact source (use a version or commit pin for reproducible installs). Packages and custom extensions apply to the admin assistant's next turn. Repository agents retain their separate project resource configuration.
+
+Host commands are shown with their exact command, working directory, timeout, and reason under **Approvals**. Only an active administrator can approve; execution is recorded once with output and status. Installing or enabling a Pi plugin authorizes trusted host code, including install scripts and later extension execution with the service user's permissions. The built-in assistant has no unrestricted shell/edit tool and cannot approve its own requests. Approval results are included in its next turn; send a follow-up message to continue after deciding an action.

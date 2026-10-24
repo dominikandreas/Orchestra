@@ -125,7 +125,7 @@ export function registerPreviewIngress(app:any){
   const isSecure=Boolean(process.env.RELAY_TLS_CERT||req.headers['x-forwarded-proto']==='https');
 
   // Case 1: Explicit preview route: /preview/:id
-  const match=url.match(/^\/preview\/([0-9a-fA-F-]+)(?:([/?#].*)|$)/);
+  const match=url.match(/^\/preview\/([^/?#]+)(?:([/?#].*)|$)/);
   if(match){
    const previewId=match[1];
    const rest=match[2]||'';
@@ -214,7 +214,7 @@ export function registerPreviewIngress(app:any){
   // Case 2: Fallback sub-resource proxying based on Referer header
   if(!url.startsWith('/api/')){
    const referer=rawReq.headers.referer||'';
-   const refMatch=referer.match(/\/preview\/([0-9a-fA-F-]+)/);
+   const refMatch=referer.match(/\/preview\/([^/?#]+)/);
    if(refMatch){
     const previewId=refMatch[1];
     const isOrchestraDashboardPage=['/','/overview','/repositories','/changes','/work','/automations','/previews','/settings','/onboarding'].some(page=>url===page||url.startsWith(page+'?')||url.startsWith(page+'/'));
@@ -239,13 +239,13 @@ export function registerPreviewIngress(app:any){
  if(app.server){
   app.server.on('upgrade',(req:http.IncomingMessage,socket:any,head:Buffer)=>{
    let previewId:string|undefined;
-   const match=req.url?.match(/^\/preview\/([0-9a-fA-F-]+)(?:[/?#]|$)/);
+   const match=req.url?.match(/^\/preview\/([^/?#]+)(?:[/?#]|$)/);
    if(match){
     previewId=match[1];
     req.url=req.url!.slice(`/preview/${previewId}`.length)||'/';
    }else{
     const referer=req.headers.referer||'';
-    const refMatch=referer.match(/\/preview\/([0-9a-fA-F-]+)/);
+    const refMatch=referer.match(/\/preview\/([^/?#]+)/);
     if(refMatch)previewId=refMatch[1];
    }
    if(!previewId){

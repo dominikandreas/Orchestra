@@ -1,6 +1,7 @@
 import { fork,type ChildProcess } from 'node:child_process';
 import { all,get,put,event,audit,canOperate,redact,dataDir,type Row } from './store.js';
-import { createWorktree,git,locked,createChange,refreshChange,mergeChange,revision,syncRepository,diffChange } from './git.js';
+import { createWorktree,git,locked,createChange,refreshChange,mergeChange,revision,syncRepository,diffChange,emitBranchUpdated } from './git.js';
+import { syncDeployments } from './deployments.js';
 import { usable } from './providers.js';
 import { startSandbox,stopSandbox,dockerExec } from './docker.js';
 const active=new Map<string,ChildProcess|null>();
@@ -91,7 +92,7 @@ export async function runJob(job:Row){active.set(job.id,null);try{const repo=get
  await new Promise<void>((resolve,reject)=>{child.on('error',reject);child.on('exit',code=>code&&get('jobs',job.id)?.status!=='cancelled'?reject(Error(failure||`Worker exited ${code}`)):resolve());});
  if(get('jobs',job.id)?.status==='cancelled')return;if(failure)throw Error(failure);
  const currentUser=get('users',job.authorId);if(!currentUser||currentUser.disabled||!canOperate(currentUser,repo.projectId))throw Error('Job owner access was revoked');
- if(job.kind!=='review'){await locked(repo.id,async()=>{await git(job.path,'add','-A');if(await git(job.path,'status','--porcelain'))await git(job.path,'commit','-m',`Orchestra: ${job.title.replace(/[\r\n]/g,' ').slice(0,120)}`);const sha=await git(job.path,'rev-parse','HEAD');if(sha!==job.sourceSha){const sourceBranch=(job.sourceBranch&&job.sourceBranch!=='auto')?job.sourceBranch:`relay/${job.id}`;const targetBranch=(job.targetBranch&&job.targetBranch!=='auto')?job.targetBranch:(change?.target||repo.base);await git(job.path,'branch','-f',sourceBranch,sha).catch(()=>{});const existing=change?.source===sourceBranch;const cr=existing?await refreshChange(change!):await createChange(repo,sourceBranch,targetBranch,job.title,job.authorId);change=put('changes',{...cr,originWorkflowId:job.workflowId});emitAutomation(existing?'change_updated':'change_created',change);job=put('jobs',{id:job.id,changeId:cr.id,sourceSha:sha,targetSha:cr.targetSha});}});
+ if(job.kind!=='review'){await locked(repo.id,async()=>{await git(job.path,'add','-A');if(await git(job.path,'status','--porcelain'))await git(job.path,'commit','-m',`Orchestra: ${job.title.replace(/[\r\n]/g,' ').slice(0,120)}`);const sha=await git(job.path,'rev-parse','HEAD');if(sha!==job.sourceSha){const sourceBranch=(job.sourceBranch&&job.sourceBranch!=='auto')?job.sourceBranch:`relay/${job.id}`;const targetBranch=(job.targetBranch&&job.targetBranch!=='auto')?job.targetBranch:(change?.target||repo.base);await git(job.path,'branch','-f',sourceBranch,sha).catch(()=>{});emitBranchUpdated(repo.id,sourceBranch);const existing=change?.source===sourceBranch;const cr=existing?await refreshChange(change!):await createChange(repo,sourceBranch,targetBranch,job.title,job.authorId);change=put('changes',{...cr,originWorkflowId:job.workflowId});emitAutomation(existing?'change_updated':'change_created',change);job=put('jobs',{id:job.id,changeId:cr.id,sourceSha:sha,targetSha:cr.targetSha});}});
  const testStatus=await runTests(job,repo);if(change&&job.reviewAfter)queueRequestedReview(job,change,user);if(job.autonomy==='auto'&&change&&testStatus==='passed'){await maybeAutoMerge(change.id);}
  }else if(change&&!all('reviews').some(r=>r.jobId===job.id))put('reviews',{changeId:change.id,jobId:job.id,sourceSha:job.sourceSha,targetSha:job.targetSha,body:result,verdict:'commented',authorId:job.authorId,ai:true});
  if(get('jobs',job.id)?.status==='cancelled')return;if(change)await maybeAutoMerge(change.id);put('jobs',{id:job.id,status:'completed',result,finished:new Date().toISOString(),resumePrompt:null});if(result)event(job.id,'result',result);event(job.id,'status','completed');
@@ -112,6 +113,7 @@ export async function submitChangeForJob(job:Row,repo:Row,user:Row){
     const sourceBranch=(job.sourceBranch&&job.sourceBranch!=='auto')?job.sourceBranch:`relay/${job.id}`;
     const targetBranch=(job.targetBranch&&job.targetBranch!=='auto')?job.targetBranch:(change?.target||repo.base);
     await git(job.path,'branch','-f',sourceBranch,sha).catch(()=>{});
+    emitBranchUpdated(repo.id,sourceBranch);
     const existing=!!change;
     const cr=existing?await refreshChange(change!):await createChange(repo,sourceBranch,targetBranch,job.title,user.id);
     resultChange=put('changes',{...cr,originWorkflowId:job.workflowId});
@@ -122,7 +124,7 @@ export async function submitChangeForJob(job:Row,repo:Row,user:Row){
   return {change:resultChange!,job:updatedJob};
 }
 let polling=false;
-export function startQueue(){for(const j of all('jobs').filter(j=>j.status==='running'))put('jobs',{id:j.id,status:'interrupted',error:'Service restarted. Resume to continue from the saved session.'});setInterval(()=>{if(polling)return;polling=true;try{const runningRepos=new Set([...active.keys()].map(id=>get('jobs',id)?.repoId));for(const j of all('jobs').filter(j=>j.status==='queued').sort((a,b)=>a.created.localeCompare(b.created))){if(active.size>=2)break;if(runningRepos.has(j.repoId))continue;runningRepos.add(j.repoId);void runJob(j);}}finally{polling=false}},1000).unref();setInterval(()=>void scanAutomation().catch(e=>put('system',{id:'automation',error:String(e)})),30000).unref();}
+export function startQueue(){for(const j of all('jobs').filter(j=>j.status==='running'))put('jobs',{id:j.id,status:'interrupted',error:'Service restarted. Resume to continue from the saved session.'});setInterval(()=>{if(polling)return;polling=true;try{const runningRepos=new Set([...active.keys()].map(id=>get('jobs',id)?.repoId));for(const j of all('jobs').filter(j=>j.status==='queued').sort((a,b)=>a.created.localeCompare(b.created))){if(active.size>=2)break;if(runningRepos.has(j.repoId))continue;runningRepos.add(j.repoId);void runJob(j);}}finally{polling=false}},1000).unref();setInterval(()=>void scanAutomation().catch(e=>put('system',{id:'automation',error:String(e)})),30000).unref();setInterval(()=>void syncDeployments().catch(()=>{}),20000).unref();}
 let scanning=false;
 export async function scanAutomation(){if(scanning)return;scanning=true;try{for(const repo of all('repos').filter(r=>r.status==='ready')){try{await syncRepository(repo)}catch(e){put('repos',{id:repo.id,error:String(e)})}}for(const c of all('changes').filter(c=>c.status==='open')){try{const updated=await refreshChange(c);if(c.sourceSha!==updated.sourceSha||c.targetSha!==updated.targetSha)emitAutomation('change_updated',updated);if(updated.conflict)emitAutomation('conflict',updated);}catch{}}
  for(const w of all('workflows').filter(w=>w.enabled&&w.trigger==='schedule'&&w.nextRun<=Date.now())){const u=get('users',w.authorId);if(u){try{enqueue({...w,title:w.name,workflowId:w.id},u)}catch(e){put('workflows',{id:w.id,error:String(e)})}}put('workflows',{id:w.id,nextRun:Date.now()+w.intervalMinutes*60000});}

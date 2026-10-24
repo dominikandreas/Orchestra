@@ -12,7 +12,7 @@ import { all,get,put,del,hash,admin,canProject,canOperate,issueInvite,redeemInvi
 import { importRepository,createLocalRepository,branches,createChange,diffChange,refreshChange,mergeChange,command,git,syncRepository } from './git.js';
 import { runtime,safeConnection,usable } from './providers.js';
 import { enqueue,signalJob,emitAutomation,maybeAutoMerge,submitChangeForJob } from './jobs.js';
-import { startPreview,stopPreview,previewLink,registerPreviewIngress } from './previews.js';
+import { startDeployment,stopDeployment,restartDeployment,deploymentLink,registerDeploymentIngress,migratePreviewsToDeployments,startPreview,stopPreview,previewLink,registerPreviewIngress } from './deployments.js';
 const str=z.string().trim().min(1).max(20000),id=z.string().uuid();
 const mode=z.enum(['approve','prepare','auto']);
 const kind=z.enum(['implement','review','address','conflict','test','coverage','improve','adapt']);
@@ -20,7 +20,8 @@ const imageSchema=z.object({type:z.literal('image'),data:z.string(),mimeType:z.s
 const attachmentSchema=z.object({name:z.string(),size:z.number().optional(),type:z.string().optional(),data:z.string()});
 const body=(req:any,schema:z.ZodType<any>)=>schema.parse(req.body);
 export async function createApp(){const app=Fastify({logger:false,forceCloseConnections:true,bodyLimit:1024*1024,...(process.env.RELAY_TLS_CERT?{https:{cert:readFileSync(process.env.RELAY_TLS_CERT),key:readFileSync(process.env.RELAY_TLS_KEY!)}}:{})});
- registerPreviewIngress(app);
+ registerDeploymentIngress(app);
+ migratePreviewsToDeployments();
  app.setErrorHandler((err:any,_req,reply)=>{reply.code(err.statusCode||400).send({error:err instanceof z.ZodError?err.issues.map(i=>`${i.path.join('.')}: ${i.message}`).join('; '):err.message});});
  app.addHook('onSend',async(_req,reply,payload)=>{reply.header('X-Content-Type-Options','nosniff').header('Referrer-Policy','no-referrer').header('X-Frame-Options','DENY').header('Content-Security-Policy',"default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'");return payload;});
  app.addHook('preHandler',async(req:any,reply)=>{const route=req.routeOptions.url||req.url; if(!route.startsWith('/api/')||['/api/health','/api/setup','/api/redeem'].includes(route))return;const raw=req.headers.authorization?.replace(/^Bearer /,'');const d=raw&&all('devices').find(d=>d.hash===hash(raw));const u=d&&get('users',d.userId);if(!u||u.disabled)return reply.code(401).send({error:'Sign in with a device invitation.'});req.user=u;req.device=d;});
@@ -43,7 +44,8 @@ export async function createApp(){const app=Fastify({logger:false,forceCloseConn
    changes:all('changes').filter(visible),
    jobs:all('jobs').filter(visible),
    workflows:all('workflows').filter(visible),
-   previews:all('previews').filter(visible),
+   previews:all('deployments').concat(all('previews')).filter(visible),
+   deployments:all('deployments').concat(all('previews')).filter(visible),
    resources:all('resources').filter(visible),
    connections:all('connections').filter(c=>c.ownerId===u.id||admin(u)||c.shared&&(c.projects||[]).some((p:string)=>canProject(u,p))).map(c=>safeConnection(c,r)),
    providers
@@ -85,10 +87,22 @@ export async function createApp(){const app=Fastify({logger:false,forceCloseConn
  app.post('/api/connections/:id/login',async(req:any)=>{const c=connection(req),b=body(req,z.object({method:z.enum(['api_key','oauth','ambient'])}));const r=await runtime(c.id);if(b.method==='ambient'||r.hasConfiguredAuth(c.provider)||(r.getProvider(c.provider) as any)?.baseUrl?.startsWith('cli:')){put('connections',{...c,status:'connected'});return {ok:true,status:'connected'};}connection(req);if(logins.get(c.id)?.status==='pending')throw Error('A login is already in progress');const state:any={status:'pending',events:[],prompt:null,resolve:null,abort:new AbortController()};logins.set(c.id,state);const timeout=setTimeout(()=>state.abort.abort(),10*60000);void r.login(c.provider,b.method,{signal:state.abort.signal,notify:e=>state.events.push(e),prompt:p=>new Promise((resolve,reject)=>{state.prompt={...p,signal:undefined};state.resolve=resolve;state.abort.signal.addEventListener('abort',()=>reject(Error('Login timed out')),{once:true});})},{getDeviceId:installationDeviceId,agentName:'Orchestra'}).then(()=>{state.status='connected';state.prompt=null}).catch(e=>{state.status='error';state.error=String(e);state.prompt=null}).finally(()=>clearTimeout(timeout));return {ok:true};});
  app.get('/api/connections/:id/login',(req:any)=>{connection(req);const s=logins.get(req.params.id);return s?{status:s.status,events:s.events,prompt:s.prompt,error:s.error}:{status:'idle'};});
  app.post('/api/connections/:id/answer',(req:any)=>{connection(req);const b=body(req,z.object({answer:z.string().min(1).max(20000)})),s=logins.get(req.params.id);if(!s?.resolve)throw Error('No authentication prompt pending');const resolve=s.resolve;s.resolve=null;s.prompt=null;resolve(b.answer);return {ok:true};});
- app.post('/api/previews',async(req:any)=>{const b=body(req,z.object({repoId:id,jobId:id.optional()}));const r=entity(req,'repos',b.repoId,true),j=b.jobId?entity(req,'jobs',b.jobId,true):undefined;if(j&&j.repoId!==r.id)throw Error('Job belongs to another repository');void startPreview(r,j,user(req).id).catch(()=>{});return {ok:true};});
- app.post('/api/previews/:id/link',(req:any)=>{const p=entity(req,'previews',req.params.id);if(p.status!=='running')throw Error('Preview is not running');return {url:previewLink(p,user(req).id,base(req))};});
- app.get('/api/previews/:id/logs',async(req:any)=>{const p=entity(req,'previews',req.params.id);return {log:await command('docker',['logs','--tail','100',p.name]).catch(String)}});
- app.post('/api/previews/:id/stop',(req:any)=>{entity(req,'previews',req.params.id,true);return stopPreview(req.params.id)});
+ const getDeploymentEntity=(req:any,deployId:string,write=false)=>{const p=get('deployments',deployId)||get('previews',deployId);if(!p)throw Error('Deployment not found');const projectId=p.projectId;if(!(write?canOperate(user(req),projectId):canProject(user(req),projectId)))throw Error('Project access denied');return p;};
+ const handleStartDeployment=async(req:any)=>{const b=body(req,z.object({repoId:id,jobId:id.optional(),branch:str.optional()}));const r=entity(req,'repos',b.repoId,true),j=b.jobId?entity(req,'jobs',b.jobId,true):undefined;if(j&&j.repoId!==r.id)throw Error('Job belongs to another repository');void startDeployment(r,j,user(req).id,b.branch).catch(()=>{});return {ok:true};};
+ app.post('/api/deployments',handleStartDeployment);
+ app.post('/api/previews',handleStartDeployment);
+ const handleDeploymentLink=(req:any)=>{const p=getDeploymentEntity(req,req.params.id);if(p.status!=='running')throw Error('Deployment is not running');return {url:deploymentLink(p,user(req).id,base(req))};};
+ app.post('/api/deployments/:id/link',handleDeploymentLink);
+ app.post('/api/previews/:id/link',(req:any)=>{const p=getDeploymentEntity(req,req.params.id);if(p.status!=='running')throw Error('Preview is not running');return {url:previewLink(p,user(req).id,base(req))};});
+ const handleDeploymentLogs=async(req:any)=>{const p=getDeploymentEntity(req,req.params.id);return {log:await command('docker',['logs','--tail','100',p.name]).catch(String)}};
+ app.get('/api/deployments/:id/logs',handleDeploymentLogs);
+ app.get('/api/previews/:id/logs',handleDeploymentLogs);
+ const handleDeploymentStop=(req:any)=>{getDeploymentEntity(req,req.params.id,true);return stopDeployment(req.params.id)};
+ app.post('/api/deployments/:id/stop',handleDeploymentStop);
+ app.post('/api/previews/:id/stop',handleDeploymentStop);
+ const handleDeploymentRestart=(req:any)=>{getDeploymentEntity(req,req.params.id,true);return restartDeployment(req.params.id)};
+ app.post('/api/deployments/:id/restart',handleDeploymentRestart);
+ app.post('/api/previews/:id/restart',handleDeploymentRestart);
  app.get('/api/access',req=>{const u=user(req);return {users:admin(u)?all('users'):[u],devices:all('devices').filter(d=>admin(u)||d.userId===u.id).map(({hash,...d})=>d),invites:admin(u)?all('invites').map(({hash,...i})=>i):[]}});
  app.post('/api/invites',req=>{const b=body(req,z.object({userId:id.optional(),role:z.enum(['admin','operator','viewer']).default('viewer'),projects:z.array(id).default([])}));if(!b.userId||b.userId!==user(req).id)needAdmin(req);if(b.userId&&!get('users',b.userId))throw Error('User not found');const inv=issueInvite(b.userId,b.role,b.projects);audit(user(req).id,'invite.create',inv.id);return {url:`${base(req)}/onboarding#${inv.token}`,id:inv.id};});
  app.delete('/api/invites/:id',(req:any)=>{needAdmin(req);del('invites',req.params.id);return {ok:true}});
@@ -96,7 +110,7 @@ export async function createApp(){const app=Fastify({logger:false,forceCloseConn
  app.patch('/api/users/:id',(req:any)=>{needAdmin(req);const b=body(req,z.object({role:z.enum(['owner','admin','operator','viewer']).optional(),projects:z.array(id).optional(),disabled:z.boolean().optional()}));const target=get('users',req.params.id);if(!target)throw Error('User not found');if((target.role==='owner'||b.role==='owner')&&user(req).role!=='owner')throw Error('Only an owner can manage owners');if(target.role==='owner'&&(b.disabled||b.role&&b.role!=='owner')&&all('users').filter(u=>u.role==='owner'&&!u.disabled).length===1)throw Error('Keep at least one active owner');return put('users',{id:target.id,...b});});
  app.post('/api/resources',req=>{const b=body(req,z.object({projectId:id,name:str,kind:z.enum(['prompt','skill','extension']),content:z.string().min(1).max(200000),parentId:id.optional()}));entity(req,'projects',b.projectId,true);return put('resources',{...b,authorId:user(req).id,active:false,version:all('resources').filter(r=>r.projectId===b.projectId&&r.name===b.name).length+1});});
  app.post('/api/resources/:id/activate',async(req:any)=>{const r=entity(req,'resources',req.params.id,true);if(r.kind==='extension')needAdmin(req);if(r.kind==='extension'){const parsed=ts.transpileModule(r.content,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ESNext},reportDiagnostics:true});if(parsed.diagnostics?.some(d=>d.category===ts.DiagnosticCategory.Error))throw Error('Extension has TypeScript syntax errors. Fix the draft before activation.');await mkdir(join(dataDir,'extensions'),{recursive:true});const path=join(dataDir,'extensions',`${r.id}.ts`);await writeFile(path,r.content,{mode:0o600});put('resources',{id:r.id,path});}for(const old of all('resources').filter(x=>x.projectId===r.projectId&&x.name===r.name))put('resources',{id:old.id,active:false});audit(user(req).id,'resource.activate',r.id);return put('resources',{id:r.id,active:true});});
- app.get('/api/self',req=>{needAdmin(req);return {repo:all('repos').find(r=>r.self),deployments:all('deployments')};});
+ app.get('/api/self',req=>{needAdmin(req);return {repo:all('repos').find(r=>r.self),deployments:all('releases')};});
  app.post('/api/self/register',async req=>{needAdmin(req);return registerSelf()});
  app.post('/api/self/build',async req=>{needAdmin(req);const b=body(req,z.object({changeId:id}));return prepareDeployment(b.changeId,user(req).id)});
  app.post('/api/self/activate',async req=>{needAdmin(req);const b=body(req,z.object({id}));return activateDeployment(b.id,user(req).id)});

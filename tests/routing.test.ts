@@ -23,7 +23,7 @@ after(async()=>{
 });
 
 test('SPA catch-all serves index.html for UI routes and 404 for missing API routes',async()=>{
- for(const path of ['/','/overview','/repositories','/changes','/changes/cr-123','/work','/jobs/job-456','/automations','/previews','/settings']){
+ for(const path of ['/','/overview','/repositories','/changes','/changes/cr-123','/work','/jobs/job-456','/automations','/deployments','/previews','/settings']){
   const res=await app.inject({method:'GET',url:path});
   assert.equal(res.statusCode,200,`Failed for path: ${path}`);
   assert.ok(res.headers['content-type']?.includes('text/html'),`Expected HTML header for ${path}`);
@@ -45,8 +45,9 @@ test('route parsing and URL serialization contract',async()=>{
   const jobMatch=clean.match(/^\/(?:jobs|work)\/([^/]+)$/);
   if(jobMatch)return {page:'work',detail:{type:'job',id:jobMatch[1]},project};
   const p=clean.replace(/^\//,'');
-  const validPages=['overview','repositories','changes','work','automations','previews','settings'];
-  const page=validPages.includes(p)?p:'overview';
+  const validPages=['overview','repositories','changes','work','automations','deployments','previews','settings'];
+  const resolvedPage=p==='previews'?'deployments':p;
+  const page=validPages.includes(resolvedPage)?resolvedPage:'overview';
   return {page,detail:null,project};
  }
 
@@ -83,7 +84,8 @@ test('route parsing and URL serialization contract',async()=>{
  assert.equal(buildUrl('work',{type:'job',id:'job-xyz'},'all'),'/jobs/job-xyz');
 
  // Other top-level pages
- for(const p of ['repositories','work','automations','previews','settings']){
+ assert.deepEqual(parseRoute('/previews',''),{page:'deployments',detail:null,project:'all'});
+ for(const p of ['repositories','work','automations','deployments','settings']){
   assert.deepEqual(parseRoute(`/${p}`,''),{page:p,detail:null,project:'all'});
   assert.equal(buildUrl(p,null,'all'),`/${p}`);
  }

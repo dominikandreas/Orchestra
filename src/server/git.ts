@@ -5,6 +5,10 @@ import { join, resolve } from 'node:path';
 import { dataDir, get, put, all, del, admin, type Row } from './store.js';
 export async function command(exe:string,args:string[],cwd?:string,timeout=120000):Promise<string>{return new Promise((res,rej)=>{const p=spawn(exe,args,{cwd,env:{...process.env,GIT_TERMINAL_PROMPT:'0'},stdio:['ignore','pipe','pipe']});let out='',err='';const t=setTimeout(()=>{p.kill('SIGKILL');rej(Error(`${exe} timed out`));},timeout);p.stdout.on('data',b=>{out=(out+b).slice(-2000000);});p.stderr.on('data',b=>{err=(err+b).slice(-20000);});p.on('error',e=>{clearTimeout(t);rej(e)});p.on('close',code=>{clearTimeout(t);code===0?res(out.trim()):rej(Error(err||`${exe} exited ${code}`));});});}
 export const git=(cwd:string,...args:string[])=>command('git',['-c','core.hooksPath=/dev/null','-c','protocol.file.allow=always',...args],cwd);
+type BranchUpdateListener=(repoId:string,branchName:string)=>void;
+const branchListeners:BranchUpdateListener[]=[];
+export function onBranchUpdated(listener:BranchUpdateListener){branchListeners.push(listener);}
+export function emitBranchUpdated(repoId:string,branchName:string){for(const l of branchListeners){try{l(repoId,branchName);}catch{}}}
 const locks=new Map<string,Promise<any>>();
 export async function locked<T>(id:string,fn:()=>Promise<T>):Promise<T>{const prev=locks.get(id)||Promise.resolve();const next=prev.catch(()=>{}).then(fn);locks.set(id,next);try{return await next;}finally{if(locks.get(id)===next)locks.delete(id);}}
 export async function createLocalRepository(destinationPath:string,name:string,defaultBranch='main'){
@@ -105,9 +109,10 @@ export async function mergeChange(id:string,options?:MergeOptions){
    if(await revision(r,c.source)!==source)throw Error('Source changed during merge');
    await git(r.path,'update-ref',`refs/heads/${c.target}`,merged,target);
    const result=put('changes',{...c,status:'merged',mergedSha:merged});
+   emitBranchUpdated(r.id,c.target);
    if(attempt)put('audit',{id:attempt.id,status:'completed',mergedSha:merged});return result;
   }catch(e){if(attempt)put('audit',{id:attempt.id,status:'failed',error:String(e)});throw e;}
   finally{if(p)await git(r.path,'worktree','remove','--force',p).catch(()=>{});}
  });
 }
-export async function syncRepository(repo:Row){return locked(repo.id,async()=>{await git(repo.path,'fetch','--no-tags','origin','+refs/heads/*:refs/remotes/source/*');const refs=(await git(repo.path,'for-each-ref','--format=%(refname:strip=3) %(objectname)','refs/remotes/source')).split('\n').filter(Boolean);const diverged:string[]=[];for(const ref of refs){const [name,sha]=ref.split(' ');if(name.startsWith('relay/'))continue;let old:string|undefined;try{old=await revision(repo,name)}catch{}if(old===sha)continue;if(old){try{await git(repo.path,'merge-base','--is-ancestor',old,sha)}catch{diverged.push(name);continue;}}await git(repo.path,'update-ref',`refs/heads/${name}`,sha,old||'0'.repeat(40));}put('repos',{id:repo.id,lastSync:new Date().toISOString(),diverged,error:null});return {diverged};});}
+export async function syncRepository(repo:Row){return locked(repo.id,async()=>{await git(repo.path,'fetch','--no-tags','origin','+refs/heads/*:refs/remotes/source/*');const refs=(await git(repo.path,'for-each-ref','--format=%(refname:strip=3) %(objectname)','refs/remotes/source')).split('\n').filter(Boolean);const diverged:string[]=[];for(const ref of refs){const [name,sha]=ref.split(' ');if(name.startsWith('relay/'))continue;let old:string|undefined;try{old=await revision(repo,name)}catch{}if(old===sha)continue;if(old){try{await git(repo.path,'merge-base','--is-ancestor',old,sha)}catch{diverged.push(name);continue;}}await git(repo.path,'update-ref',`refs/heads/${name}`,sha,old||'0'.repeat(40));emitBranchUpdated(repo.id,name);}put('repos',{id:repo.id,lastSync:new Date().toISOString(),diverged,error:null});return {diverged};});}

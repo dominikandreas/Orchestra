@@ -43,8 +43,21 @@ try {
  const shell=createBashToolDefinition('/workspace',{exposeSessionEnvironment:false,operations:{exec:async(cmd,_cwd,options)=>{const user=get('users',job.authorId);if(!user||user.disabled||!canOperate(user,repo.projectId))throw Error('Job owner access was revoked');return dockerExec(container,cmd,options.onData,options.signal,options.timeout)}}});shell.name='workspace';shell.description='Run bash inside the isolated repository container. Use shell commands to read, edit, and test files in /workspace.';
  ({session}=await createAgentSession({cwd:job.path,agentDir:join(dataDir,'pi'),modelRuntime:mr,model,resourceLoader:loader,tools:['workspace',...additionalTools.map(t=>t.name),...loader.getExtensions().extensions.flatMap(e=>[...e.tools.keys()])],customTools:[shell as any,...additionalTools],sessionManager:manager,settingsManager:SettingsManager.inMemory({retry:{enabled:true,maxRetries:2}})}));
  send('session',manager.getSessionFile());
- session.subscribe((e:any)=>{if(e.type==='message_update'&&e.assistantMessageEvent.type==='text_delta')send('text',e.assistantMessageEvent.delta);else if(e.type==='tool_execution_start')send('tool',{name:e.toolName,args:e.args});else if(e.type==='tool_execution_end')send('tool_result',{name:e.toolName,result:e.result,isError:e.isError});else if(e.type==='message_end'&&e.message.role==='assistant')send('usage',{usage:e.message.usage,stopReason:e.message.stopReason});});
+ session.subscribe((e:any)=>{
+  if(e.type==='message_update'){
+   if(e.assistantMessageEvent.type==='text_delta')send('text',e.assistantMessageEvent.delta);
+   else if(e.assistantMessageEvent.type==='thinking_delta')send('thinking',e.assistantMessageEvent.delta);
+  }
+  else if(e.type==='tool_execution_start')send('tool',{toolCallId:e.toolCallId,name:e.toolName,args:e.args});
+  else if(e.type==='tool_execution_update')send('tool_update',{toolCallId:e.toolCallId,name:e.toolName,args:e.args,partialResult:e.partialResult});
+  else if(e.type==='tool_execution_end')send('tool_result',{toolCallId:e.toolCallId,name:e.toolName,result:e.result,isError:e.isError,durationMs:e.durationMs});
+  else if(e.type==='message_end'&&e.message.role==='assistant'){
+   send('usage',{usage:e.message.usage,stopReason:e.message.stopReason});
+   const fullText=e.message.content?.filter((c:any)=>c.type==='text').map((c:any)=>c.text).join('')||'';
+   if(fullText)send('final_text',fullText);
+  }
+ });
  if(model.reasoning) session.setThinkingLevel(job.thinkingLevel||'off');
  const promptImages=job.images?.map((img:any)=>({type:'image' as const,data:img.data,mimeType:img.mimeType||'image/png'}));
- await session.prompt(`${job.context||''}\n\n${job.resumePrompt||job.prompt}\n${job.kind==='review'?'Use submit_review to record your final verdict.':job.kind==='adapt'?'Use propose_resource and propose_workflow to save changes as drafts. For modifications to Orchestra itself, edit source code as an ordinary change request.':''}`,promptImages?.length?{images:promptImages}:undefined);const last=session.messages.filter((m:any)=>m.role==='assistant').at(-1);if(last?.stopReason==='error'||last?.stopReason==='aborted')throw Error(last.errorMessage||'Provider request did not complete');send('result',session.getLastAssistantText());
+ await session.prompt(`${job.context||''}\n\n${job.resumePrompt||job.prompt}\n${job.kind==='review'?'Use submit_review to record your final verdict.':job.kind==='adapt'?'Use propose_resource and propose_workflow to save changes as drafts. For modifications to Orchestra itself, edit source code as an ordinary change request.':''}`,promptImages?.length?{images:promptImages}:undefined);const last=session.messages.filter((m:any)=>m.role==='assistant').at(-1);if(last?.stopReason==='error'||last?.stopReason==='aborted')throw Error(last.errorMessage||'Provider request did not complete');const finalRes=session.getLastAssistantText();if(finalRes)send('result',finalRes);
 }catch(e){send('failure',String(e));process.exitCode=1;}finally{session?.dispose();await stopSandbox(container);process.disconnect?.();}

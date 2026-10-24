@@ -250,4 +250,119 @@
   color: var(--muted);
   font-size: 12px;
 }
+.thinking-event {
+  border: 1px dashed var(--line);
+  background: var(--bg);
+  border-radius: 8px;
+  padding: 10px 14px;
+  margin-bottom: 12px;
+  font-size: 11px;
+}
+.thinking-event summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--purple);
+  cursor: pointer;
+  user-select: none;
+}
+.thinking-content {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+  white-space: pre-wrap;
+  font-family: 'SFMono-Regular', Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--muted);
+  max-height: 250px;
+  overflow: auto;
+}
+.working-indicator {
+  border-style: dashed !important;
+  border-color: var(--purple) !important;
+  background: var(--tint) !important;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 14px 18px !important;
+  margin-bottom: 15px;
+}
+.working-status-text {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--purple);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.message.final-result {
+  border-color: var(--purple);
+  box-shadow: 0 4px 12px #6655df14;
+}
+.message.final-result .message-label {
+  color: var(--purple);
+  font-weight: 700;
+}
+.tool-partial {
+  margin-top: 6px;
+  padding: 8px 10px;
+  background: #181c25;
+  color: #a0aec0;
+  border-radius: 4px;
+  font-size: 11px;
+  max-height: 200px;
+  overflow: auto;
+}
+.admin-inline-tool {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--muted);
+  background: var(--bg);
+  padding: 6px 10px;
+  border-radius: 6px;
+  margin: 6px 0;
+  border: 1px solid var(--line);
+}
+.admin-inline-tool code {
+  font-size: 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.admin-thinking-log {
+  border: 1px dashed var(--line);
+  background: var(--bg);
+  border-radius: 6px;
+  padding: 8px 10px;
+  margin: 6px 0;
+  font-size: 11px;
+}
+.admin-thinking-log summary {
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--purple);
+  font-weight: 600;
+}
+.admin-thinking-log pre {
+  margin: 6px 0 0;
+  max-height: 150px;
+  overflow: auto;
+  font-size: 10px;
+  color: var(--muted);
+}
+.agent-task-card {
+  transition: all 0.15s ease;
+}
+.agent-task-card:hover {
+  border-color: var(--purple);
+}
+
 

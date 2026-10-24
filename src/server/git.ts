@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
 import { mkdir, realpath } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
-import { dataDir, get, put, type Row } from './store.js';
+import { dataDir, get, put, all, admin, type Row } from './store.js';
 export async function command(exe:string,args:string[],cwd?:string,timeout=120000):Promise<string>{return new Promise((res,rej)=>{const p=spawn(exe,args,{cwd,env:{...process.env,GIT_TERMINAL_PROMPT:'0'},stdio:['ignore','pipe','pipe']});let out='',err='';const t=setTimeout(()=>{p.kill('SIGKILL');rej(Error(`${exe} timed out`));},timeout);p.stdout.on('data',b=>{out=(out+b).slice(-2000000);});p.stderr.on('data',b=>{err=(err+b).slice(-20000);});p.on('error',e=>{clearTimeout(t);rej(e)});p.on('close',code=>{clearTimeout(t);code===0?res(out.trim()):rej(Error(err||`${exe} exited ${code}`));});});}
 export const git=(cwd:string,...args:string[])=>command('git',['-c','core.hooksPath=/dev/null','-c','protocol.file.allow=always',...args],cwd);
 const locks=new Map<string,Promise<any>>();
@@ -13,5 +13,39 @@ export async function createWorktree(repo:Row,id:string,base:string){const path=
 export async function createChange(repo:Row,source:string,target:string,title:string,authorId:string){if(source===target)throw Error('Choose different source and target branches');return put('changes',{repoId:repo.id,projectId:repo.projectId,title,source,target,sourceSha:await revision(repo,source),targetSha:await revision(repo,target),status:'open',authorId});}
 export async function diffChange(c:Row){const r=get('repos',c.repoId)!;return git(r.path,'diff','--no-ext-diff',`${c.targetSha}...${c.sourceSha}`);}
 export async function refreshChange(c:Row){const r=get('repos',c.repoId)!;const sourceSha=await revision(r,c.source),targetSha=await revision(r,c.target);let conflict=false;try{await git(r.path,'merge-tree','--write-tree',targetSha,sourceSha)}catch{conflict=true}return put('changes',{...c,sourceSha,targetSha,conflict});}
-export async function mergeChange(id:string){const c=get('changes',id);if(!c||c.status!=='open')throw Error('Change request is not open');const r=get('repos',c.repoId)!;return locked(r.id,async()=>{const source=await revision(r,c.source),target=await revision(r,c.target);if(source!==c.sourceSha||target!==c.targetSha)throw Error('Branches changed. Refresh and retest before merging.');const checks=(await import('./store.js')).all('checks').filter(x=>x.changeId===id&&x.sourceSha===source&&x.targetSha===target);checks.sort((a,b)=>b.created.localeCompare(a.created));if(r.testCommand&&checks[0]?.status!=='passed')throw Error('A passing latest test run for the current revisions is required.');const reviews=(await import('./store.js')).all('reviews').filter(x=>x.changeId===id&&x.sourceSha===source&&x.targetSha===target).sort((a,b)=>b.created.localeCompare(a.created));const latest=[...new Map(reviews.reverse().map(x=>[x.ai?'ai:'+x.jobId:x.authorId,x])).values()];if(r.requireReview&&(!latest.some(x=>x.verdict==='approved')||latest.some(x=>x.verdict==='changes_requested')))throw Error('An approved review with no outstanding requested changes is required.');const p=await createWorktree(r,`merge-${id}-${Date.now()}`,target);try{await git(p,'merge','--no-ff','--no-edit',source);const merged=await git(p,'rev-parse','HEAD');if(await revision(r,c.source)!==source)throw Error('Source changed during merge');await git(r.path,'update-ref',`refs/heads/${c.target}`,merged,target);return put('changes',{...c,status:'merged',mergedSha:merged});}finally{await git(r.path,'worktree','remove','--force',p).catch(()=>{});}});}
+export type MergeOptions={sourceSha:string,targetSha:string,force?:{actorId:string,reason:string}};
+export async function mergeChange(id:string,options?:MergeOptions){
+ const initial=get('changes',id);if(!initial||initial.status!=='open')throw Error('Change request is not open');
+ return locked(initial.repoId,async()=>{
+  const c=get('changes',id)!;if(c.status!=='open')throw Error('Change request is not open');
+  const r=get('repos',c.repoId)!;
+  const authorize=()=>{if(options?.force){const u=get('users',options.force.actorId);if(!u||u.disabled||!admin(u))throw Error('Active administrator access required');if(!options.force.reason.trim())throw Error('Force merge requires a reason');}};authorize();
+  const source=await revision(r,c.source),target=await revision(r,c.target);
+  if(source!==c.sourceSha||target!==c.targetSha||options&&(options.sourceSha!==source||options.targetSha!==target))throw Error('Branches changed. Refresh and retest before merging.');
+  const checks=all('checks').filter(x=>x.changeId===id&&x.sourceSha===source&&x.targetSha===target).sort((a,b)=>b.created.localeCompare(a.created));
+  const reviews=all('reviews').filter(x=>x.changeId===id&&x.sourceSha===source&&x.targetSha===target).sort((a,b)=>a.created.localeCompare(b.created));
+  const latest=[...new Map(reviews.map(x=>[x.ai?'ai':x.authorId,x])).values()];
+  const humanReviews=latest.filter(x=>!x.ai);
+  const humanApproved=humanReviews.some(x=>x.verdict==='approved');
+  const humanChangesRequested=humanReviews.some(x=>x.verdict==='changes_requested');
+  const hasApproved=latest.some(x=>x.verdict==='approved');
+  const blockedByChanges=humanApproved?humanChangesRequested:latest.some(x=>x.verdict==='changes_requested');
+  const bypassed:string[]=[];
+  if(r.testCommand&&checks[0]?.status!=='passed')bypassed.push('A passing latest test run for the current revisions is required.');
+  if(r.requireReview&&(!hasApproved||blockedByChanges))bypassed.push('An approved review with no outstanding requested changes is required.');
+  if(!options?.force&&bypassed.length)throw Error(bypassed[0]);
+  const attempt=options?.force?put('audit',{actor:options.force.actorId,action:'change.force_merge',target:id,reason:options.force.reason,sourceSha:source,targetSha:target,bypassed,status:'started'}):undefined;
+  let p:string|undefined;
+  try{
+   p=await createWorktree(r,`merge-${id}-${Date.now()}`,target);
+   await git(p,'merge','--no-ff','--no-edit',source);
+   const merged=await git(p,'rev-parse','HEAD');authorize();
+   if(await revision(r,c.source)!==source)throw Error('Source changed during merge');
+   await git(r.path,'update-ref',`refs/heads/${c.target}`,merged,target);
+   const result=put('changes',{...c,status:'merged',mergedSha:merged});
+   if(attempt)put('audit',{id:attempt.id,status:'completed',mergedSha:merged});return result;
+  }catch(e){if(attempt)put('audit',{id:attempt.id,status:'failed',error:String(e)});throw e;}
+  finally{if(p)await git(r.path,'worktree','remove','--force',p).catch(()=>{});}
+ });
+}
 export async function syncRepository(repo:Row){return locked(repo.id,async()=>{await git(repo.path,'fetch','--no-tags','origin','+refs/heads/*:refs/remotes/source/*');const refs=(await git(repo.path,'for-each-ref','--format=%(refname:strip=3) %(objectname)','refs/remotes/source')).split('\n').filter(Boolean);const diverged:string[]=[];for(const ref of refs){const [name,sha]=ref.split(' ');if(name.startsWith('relay/'))continue;let old:string|undefined;try{old=await revision(repo,name)}catch{}if(old===sha)continue;if(old){try{await git(repo.path,'merge-base','--is-ancestor',old,sha)}catch{diverged.push(name);continue;}}await git(repo.path,'update-ref',`refs/heads/${name}`,sha,old||'0'.repeat(40));}put('repos',{id:repo.id,lastSync:new Date().toISOString(),diverged,error:null});return {diverged};});}

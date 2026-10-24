@@ -5,8 +5,67 @@ import { usable } from './providers.js';
 import { startSandbox,stopSandbox,dockerExec } from './docker.js';
 const active=new Map<string,ChildProcess|null>();
 const levels=['approve','prepare','auto'];
-export function enqueue(input:any,user:Row){const r=get('repos',input.repoId);if(!r||!canOperate(user,r.projectId))throw Error('Repository access denied');const c=input.changeId?get('changes',input.changeId):undefined;if(input.changeId&&(!c||c.repoId!==r.id||c.status!=='open'))throw Error('Invalid change request');const mode=levels[Math.min(levels.indexOf(input.autonomy||r.autonomy||'prepare'),levels.indexOf(r.autonomy||'prepare'))]||'approve';const connectionId=input.connectionId||r.connectionId;const connection=usable(connectionId,user.id,r.projectId);const status=mode==='approve'&&!['review','test'].includes(input.kind)?'awaiting_approval':input.kind!=='test'&&!connection?'blocked':'queued';const job=put('jobs',{repoId:r.id,projectId:r.projectId,changeId:c?.id,authorId:user.id,kind:input.kind||'implement',title:input.title||input.prompt.slice(0,90),prompt:input.prompt,connectionId,provider:connection?.provider,model:input.model||r.model,thinkingLevel:input.thinkingLevel||r.thinkingLevel||'off',status,autonomy:mode,workflowId:input.workflowId,attempt:input.attempt||1,error:status==='blocked'?'Connect a model provider and select it in repository settings.':undefined});event(job.id,'status',status);return job;}
-export function signalJob(id:string,type:string,text?:string){const j=get('jobs',id)!;if(type==='cancel'){put('jobs',{id,status:'cancelled'});active.get(id)?.send({type});void stopSandbox(`relay-job-${id}`);void stopSandbox(`relay-test-${id}`);}else if(active.get(id)){active.get(id)!.send({type,text});event(id,'user',{text,mode:type});}else throw Error('Job is not running');}
+export function enqueue(input:any,user:Row){
+  const r=get('repos',input.repoId);
+  if(!r||!canOperate(user,r.projectId))throw Error('Repository access denied');
+  const c=input.changeId?get('changes',input.changeId):undefined;
+  if(input.changeId&&(!c||c.repoId!==r.id||c.status!=='open'))throw Error('Invalid change request');
+  const mode=levels[Math.min(levels.indexOf(input.autonomy||r.autonomy||'prepare'),levels.indexOf(r.autonomy||'prepare'))]||'approve';
+  const connectionId=input.connectionId||r.connectionId;
+  const connection=usable(connectionId,user.id,r.projectId);
+  const status=mode==='approve'&&!['review','test'].includes(input.kind)?'awaiting_approval':input.kind!=='test'&&!connection?'blocked':'queued';
+  
+  let promptText=input.prompt||'';
+  if(input.attachments?.length){
+    for(const att of input.attachments){
+      promptText+=`\n\n--- Attachment: ${att.name} ---\n${att.data}`;
+    }
+  }
+
+  const job=put('jobs',{
+    repoId:r.id,
+    projectId:r.projectId,
+    changeId:c?.id,
+    authorId:user.id,
+    kind:input.kind||'implement',
+    title:input.title||input.prompt?.slice(0,90)||'Task',
+    prompt:promptText,
+    images:input.images,
+    attachments:input.attachments,
+    targetBranch:input.targetBranch,
+    sourceBranch:input.sourceBranch,
+    connectionId,
+    provider:connection?.provider,
+    model:input.model||r.model,
+    thinkingLevel:input.thinkingLevel||r.thinkingLevel||'off',
+    status,
+    autonomy:mode,
+    workflowId:input.workflowId,
+    attempt:input.attempt||1,
+    error:status==='blocked'?'Connect a model provider and select it in repository settings.':undefined
+  });
+  event(job.id,'status',status);
+  event(job.id,'user',{text:input.prompt,images:input.images,attachments:input.attachments,mode:'prompt'});
+  return job;
+}
+export function signalJob(id:string,type:string,text?:string,images?:any[],attachments?:any[]){
+  const j=get('jobs',id)!;
+  if(type==='cancel'){
+    put('jobs',{id,status:'cancelled'});
+    active.get(id)?.send({type});
+    void stopSandbox(`relay-job-${id}`);
+    void stopSandbox(`relay-test-${id}`);
+  }else if(active.get(id)){
+    let fullText=text||'';
+    if(attachments?.length){
+      for(const att of attachments){
+        fullText+=`\n\n--- Attachment: ${att.name} ---\n${att.data}`;
+      }
+    }
+    active.get(id)!.send({type,text:fullText,images});
+    event(id,'user',{text,images,attachments,mode:type});
+  }else throw Error('Job is not running');
+}
 export async function runTests(job:Row,repo:Row){
  if(!repo.testCommand){if(job.changeId)put('checks',{changeId:job.changeId,sourceSha:job.sourceSha,targetSha:job.targetSha,status:'not_run',jobId:job.id});event(job.id,'notice','No test command configured');return 'not_run';}
  const name=`relay-test-${job.id}`;let log='',path=job.path;
@@ -22,7 +81,7 @@ export async function runTests(job:Row,repo:Row){
 }
 
 export async function runJob(job:Row){active.set(job.id,null);try{const repo=get('repos',job.repoId)!,user=get('users',job.authorId);if(!user||!canOperate(user,repo.projectId)||user.disabled)throw Error('The job owner no longer has access');let change=job.changeId?get('changes',job.changeId):undefined;if(change){change=await refreshChange(change);if(change.status!=='open')throw Error('Change request is closed');}
- if(!job.path){const base=change?.sourceSha||await revision(repo,repo.base);const path=await locked(repo.id,()=>createWorktree(repo,job.id,base));job=put('jobs',{...job,path,sourceSha:base,targetSha:change?.targetSha});}
+ if(!job.path){const targetBranch=(job.targetBranch&&job.targetBranch!=='auto')?job.targetBranch:undefined;const base=change?.sourceSha||(targetBranch?await revision(repo,targetBranch).catch(()=>revision(repo,repo.base)):await revision(repo,repo.base));const path=await locked(repo.id,()=>createWorktree(repo,job.id,base));job=put('jobs',{...job,path,sourceSha:base,targetSha:change?.targetSha});}
  put('jobs',{id:job.id,status:'running',started:new Date().toISOString(),error:null});event(job.id,'status','running');
  if(job.kind==='test'){const status=await runTests(job,repo);if(status==='cancelled')return;if(job.changeId)await maybeAutoMerge(job.changeId);put('jobs',{id:job.id,status:status==='failed'?'failed':'completed',result:`Tests ${status.replace('_',' ')}`});return;}
  const connection=usable(job.connectionId,job.authorId,repo.projectId);if(!connection){put('jobs',{id:job.id,status:'blocked',error:'Provider connection is missing or access was revoked.'});return;}job=put('jobs',{id:job.id,provider:connection.provider});
@@ -32,11 +91,36 @@ export async function runJob(job:Row){active.set(job.id,null);try{const repo=get
  await new Promise<void>((resolve,reject)=>{child.on('error',reject);child.on('exit',code=>code&&get('jobs',job.id)?.status!=='cancelled'?reject(Error(failure||`Worker exited ${code}`)):resolve());});
  if(get('jobs',job.id)?.status==='cancelled')return;if(failure)throw Error(failure);
  const currentUser=get('users',job.authorId);if(!currentUser||currentUser.disabled||!canOperate(currentUser,repo.projectId))throw Error('Job owner access was revoked');
- if(job.kind!=='review'){await locked(repo.id,async()=>{await git(job.path,'add','-A');if(await git(job.path,'status','--porcelain'))await git(job.path,'commit','-m',`Orchestra: ${job.title.replace(/[\r\n]/g,' ').slice(0,120)}`);const sha=await git(job.path,'rev-parse','HEAD');if(sha!==job.sourceSha){const existing=change?.source===`relay/${job.id}`;const cr=existing?await refreshChange(change!):await createChange(repo,`relay/${job.id}`,change?.source||repo.base,job.title,job.authorId);change=put('changes',{...cr,originWorkflowId:job.workflowId});emitAutomation(existing?'change_updated':'change_created',change);job=put('jobs',{id:job.id,changeId:cr.id,sourceSha:sha,targetSha:cr.targetSha});}});
+ if(job.kind!=='review'){await locked(repo.id,async()=>{await git(job.path,'add','-A');if(await git(job.path,'status','--porcelain'))await git(job.path,'commit','-m',`Orchestra: ${job.title.replace(/[\r\n]/g,' ').slice(0,120)}`);const sha=await git(job.path,'rev-parse','HEAD');if(sha!==job.sourceSha){const sourceBranch=(job.sourceBranch&&job.sourceBranch!=='auto')?job.sourceBranch:`relay/${job.id}`;const targetBranch=(job.targetBranch&&job.targetBranch!=='auto')?job.targetBranch:(change?.target||repo.base);await git(job.path,'branch','-f',sourceBranch,sha).catch(()=>{});const existing=change?.source===sourceBranch;const cr=existing?await refreshChange(change!):await createChange(repo,sourceBranch,targetBranch,job.title,job.authorId);change=put('changes',{...cr,originWorkflowId:job.workflowId});emitAutomation(existing?'change_updated':'change_created',change);job=put('jobs',{id:job.id,changeId:cr.id,sourceSha:sha,targetSha:cr.targetSha});}});
  const testStatus=await runTests(job,repo);if(change&&job.reviewAfter)queueRequestedReview(job,change,user);if(job.autonomy==='auto'&&change&&testStatus==='passed'){await maybeAutoMerge(change.id);}
  }else if(change&&!all('reviews').some(r=>r.jobId===job.id))put('reviews',{changeId:change.id,jobId:job.id,sourceSha:job.sourceSha,targetSha:job.targetSha,body:result,verdict:'commented',authorId:job.authorId,ai:true});
  if(get('jobs',job.id)?.status==='cancelled')return;if(change)await maybeAutoMerge(change.id);put('jobs',{id:job.id,status:'completed',result,finished:new Date().toISOString(),resumePrompt:null});event(job.id,'status','completed');
  }catch(e){if(get('jobs',job.id)?.status==='cancelled')return;put('jobs',{id:job.id,status:'failed',error:redact(String(e)),finished:new Date().toISOString()});event(job.id,'error',String(e));}finally{active.delete(job.id);}}
+
+export async function submitChangeForJob(job:Row,repo:Row,user:Row){
+  if(job.status==='running')throw Error('Cannot submit while task is actively running. Wait for the model to finish or steer/stop it.');
+  if(!job.path)throw Error('No workspace exists for this task.');
+  let change=job.changeId?get('changes',job.changeId):undefined;
+  let resultChange:Row;
+  let updatedJob:Row=job;
+  await locked(repo.id,async()=>{
+    await git(job.path,'add','-A');
+    if(await git(job.path,'status','--porcelain')){
+      await git(job.path,'commit','-m',`Orchestra: ${job.title.replace(/[\r\n]/g,' ').slice(0,120)}`);
+    }
+    const sha=await git(job.path,'rev-parse','HEAD');
+    const sourceBranch=(job.sourceBranch&&job.sourceBranch!=='auto')?job.sourceBranch:`relay/${job.id}`;
+    const targetBranch=(job.targetBranch&&job.targetBranch!=='auto')?job.targetBranch:(change?.target||repo.base);
+    await git(job.path,'branch','-f',sourceBranch,sha).catch(()=>{});
+    const existing=!!change;
+    const cr=existing?await refreshChange(change!):await createChange(repo,sourceBranch,targetBranch,job.title,user.id);
+    resultChange=put('changes',{...cr,originWorkflowId:job.workflowId});
+    emitAutomation(existing?'change_updated':'change_created',resultChange);
+    updatedJob=put('jobs',{id:job.id,changeId:cr.id,sourceSha:sha,targetSha:cr.targetSha});
+  });
+  event(job.id,'notice',`Change request ${resultChange!.id} submitted.`);
+  return {change:resultChange!,job:updatedJob};
+}
 let polling=false;
 export function startQueue(){for(const j of all('jobs').filter(j=>j.status==='running'))put('jobs',{id:j.id,status:'interrupted',error:'Service restarted. Resume to continue from the saved session.'});setInterval(()=>{if(polling)return;polling=true;try{const runningRepos=new Set([...active.keys()].map(id=>get('jobs',id)?.repoId));for(const j of all('jobs').filter(j=>j.status==='queued').sort((a,b)=>a.created.localeCompare(b.created))){if(active.size>=2)break;if(runningRepos.has(j.repoId))continue;runningRepos.add(j.repoId);void runJob(j);}}finally{polling=false}},1000).unref();setInterval(()=>void scanAutomation().catch(e=>put('system',{id:'automation',error:String(e)})),30000).unref();}
 let scanning=false;

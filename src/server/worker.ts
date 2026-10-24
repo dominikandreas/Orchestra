@@ -9,7 +9,7 @@ const id=process.argv[2],job=get('jobs',id)!,repo=get('repos',job.repoId)!;
 let session:any;const container=`relay-job-${id}`;
 process.on('disconnect',()=>{void stopSandbox(container).finally(()=>process.exit(0))});
 const send=(type:string,data:any)=>process.send?.({type,data});
-process.on('message',async(m:any)=>{try{if(m.type==='cancel'){await session?.abort();await stopSandbox(container);process.exit(0);}else if(m.type==='steer')await session?.steer(m.text);else if(m.type==='followup')await session?.followUp(m.text);}catch(e){send('notice',String(e))}});
+process.on('message',async(m:any)=>{try{if(m.type==='cancel'){await session?.abort();await stopSandbox(container);process.exit(0);}else if(m.type==='steer')await session?.steer(m.text,m.images);else if(m.type==='followup')await session?.followUp(m.text,m.images);}catch(e){send('notice',String(e))}});
 try {
  await startSandbox(container,job.path,repo.image,job.kind==='review');send('notice','Isolated workspace ready');
  const mr=await runtime(job.connectionId);const model=mr.getModel(job.provider,job.model);if(!model)throw Error('Selected model is not available. Choose a model in repository settings.');
@@ -33,5 +33,6 @@ try {
  send('session',manager.getSessionFile());
  session.subscribe((e:any)=>{if(e.type==='message_update'&&e.assistantMessageEvent.type==='text_delta')send('text',e.assistantMessageEvent.delta);else if(e.type==='tool_execution_start')send('tool',{name:e.toolName,args:e.args});else if(e.type==='tool_execution_end')send('tool_result',{name:e.toolName,result:e.result,isError:e.isError});else if(e.type==='message_end'&&e.message.role==='assistant')send('usage',{usage:e.message.usage,stopReason:e.message.stopReason});});
  if(model.reasoning) session.setThinkingLevel(job.thinkingLevel||'off');
- await session.prompt(`${job.context||''}\n\n${job.resumePrompt||job.prompt}\n${job.kind==='review'?'Use submit_review to record your final verdict.':job.kind==='adapt'?'Use propose_resource and propose_workflow to save changes as drafts. For modifications to Orchestra itself, edit source code as an ordinary change request.':''}`);const last=session.messages.filter((m:any)=>m.role==='assistant').at(-1);if(last?.stopReason==='error'||last?.stopReason==='aborted')throw Error(last.errorMessage||'Provider request did not complete');send('result',session.getLastAssistantText());
+ const promptImages=job.images?.map((img:any)=>({type:'image' as const,data:img.data,mimeType:img.mimeType||'image/png'}));
+ await session.prompt(`${job.context||''}\n\n${job.resumePrompt||job.prompt}\n${job.kind==='review'?'Use submit_review to record your final verdict.':job.kind==='adapt'?'Use propose_resource and propose_workflow to save changes as drafts. For modifications to Orchestra itself, edit source code as an ordinary change request.':''}`,promptImages?.length?{images:promptImages}:undefined);const last=session.messages.filter((m:any)=>m.role==='assistant').at(-1);if(last?.stopReason==='error'||last?.stopReason==='aborted')throw Error(last.errorMessage||'Provider request did not complete');send('result',session.getLastAssistantText());
 }catch(e){send('failure',String(e));process.exitCode=1;}finally{session?.dispose();await stopSandbox(container);process.disconnect?.();}

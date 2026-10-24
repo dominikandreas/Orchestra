@@ -14,9 +14,33 @@ const starting=new Set<string>();
 export function adminSnapshot(userId:string){requireAdministrator(userId);return {threads:all('adminThreads').filter(t=>t.authorId===userId),runs:all('adminRuns').filter(t=>t.authorId===userId),actions:all('adminActions'),plugins:all('adminPlugins'),selfJobs:all('jobs').filter(j=>get('repos',j.repoId)?.self),deployments:all('deployments')};}
 export function adminThread(id:string,userId:string){requireAdministrator(userId);const t=get('adminThreads',id);if(!t||t.authorId!==userId)throw Error('Conversation access denied');return {...t,messages:all('adminMessages').filter(m=>m.threadId===id),runs:all('adminRuns').filter(r=>r.threadId===id).map(r=>({...r,events:events(r.id)}))};}
 export function createAdminThread(userId:string){requireAdministrator(userId);return put('adminThreads',{authorId:userId,title:'New conversation',permissionMode:'manual'});}
-export const messageSchema=z.object({message:z.string().trim().min(1).max(20000),connectionId:z.string().uuid(),model:z.string().min(1),context:z.object({page:z.string().max(100).optional(),projectId:z.string().optional(),repoId:z.string().optional(),changeId:z.string().optional(),jobId:z.string().optional()}).default({})});
+export const messageSchema=z.object({
+  message:z.string().trim().min(1).max(20000),
+  connectionId:z.string().uuid(),
+  model:z.string().min(1),
+  context:z.object({
+    page:z.string().max(100).optional(),
+    projectId:z.string().optional(),
+    repoId:z.string().optional(),
+    changeId:z.string().optional(),
+    jobId:z.string().optional()
+  }).default({}),
+  images:z.array(z.object({
+    type:z.literal('image'),
+    data:z.string(),
+    mimeType:z.string(),
+    name:z.string().optional(),
+    url:z.string().optional()
+  })).optional(),
+  attachments:z.array(z.object({
+    name:z.string(),
+    size:z.number().optional(),
+    type:z.string().optional(),
+    data:z.string()
+  })).optional()
+});
 export function startAdminTurn(threadId:string,userId:string,input:unknown){const user=requireAdministrator(userId);adminThread(threadId,userId);const b=messageSchema.parse(input);if(starting.has(threadId)||active.has(threadId))throw Error('Wait for this turn to finish or stop it first');const c=get('connections',b.connectionId);if(!c||c.status!=='connected'||c.ownerId!==userId&&!c.shared)throw Error('Choose one of your connected model providers');
- put('adminMessages',{threadId,role:'user',text:b.message,context:b.context});put('adminThreads',{id:threadId,title:all('adminMessages').filter(m=>m.threadId===threadId&&m.role==='user').length===1?b.message.slice(0,80):get('adminThreads',threadId)!.title,connectionId:c.id,model:b.model});const run=put('adminRuns',{threadId,authorId:user.id,title:b.message.slice(0,90),status:'running',context:b.context});starting.add(threadId);void runAdminTurn(run,b).catch(()=>{});return run;}
+ put('adminMessages',{threadId,role:'user',text:b.message,context:b.context,images:b.images,attachments:b.attachments});put('adminThreads',{id:threadId,title:all('adminMessages').filter(m=>m.threadId===threadId&&m.role==='user').length===1?b.message.slice(0,80):get('adminThreads',threadId)!.title,connectionId:c.id,model:b.model});const run=put('adminRuns',{threadId,authorId:user.id,title:b.message.slice(0,90),status:'running',context:b.context});starting.add(threadId);void runAdminTurn(run,b).catch(()=>{});return run;}
 export async function stopAdminTurn(threadId:string,userId:string){adminThread(threadId,userId);for(const r of all('adminRuns').filter(r=>r.threadId===threadId&&r.status==='running'))put('adminRuns',{id:r.id,status:'cancelled'});await active.get(threadId)?.abort();return {ok:true};}
 export function recoverAdminRuns(){for(const kind of ['adminRuns','adminActions'])for(const r of all(kind).filter(r=>r.status==='running'))put(kind,{id:r.id,status:'interrupted',error:'Service restarted. Inspect the result before submitting a new action.'});}
 export async function shutdownAdmin(){for(const [id,s] of active){for(const r of all('adminRuns').filter(r=>r.threadId===id&&r.status==='running'))put('adminRuns',{id:r.id,status:'interrupted'});await s.abort();}}
@@ -57,7 +81,14 @@ async function runAdminTurn(run:Row,b:z.infer<typeof messageSchema>){let session
  put('adminThreads',{id:run.threadId,sessionFile:manager.getSessionFile()});active.set(run.threadId,session);starting.delete(run.threadId);if(get('adminRuns',run.id)?.status!=='running')return;
  let toolCount=0;timer=setTimeout(()=>void session.abort(),10*60000);session.subscribe((e:any)=>{if(e.type==='message_update'&&e.assistantMessageEvent.type==='text_delta')event(run.id,'text',e.assistantMessageEvent.delta);if(e.type==='tool_execution_start'){event(run.id,'tool',{name:e.toolName,args:e.args});if(++toolCount>30)void session.abort();}if(e.type==='tool_execution_end')event(run.id,'tool_result',{name:e.toolName,result:e.result,isError:e.isError});});
  const approvals=all('adminActions').filter(a=>a.threadId===run.threadId).map(a=>({id:a.id,action:a.action,status:a.status,result:a.result,error:a.error}));
- await session.prompt(`Current UI context (IDs only, inspect with tools): ${JSON.stringify(b.context)}\nApproval results: ${JSON.stringify(redact(approvals))}\nAdministrator request:\n${b.message}`);
+ let adminPrompt=`Current UI context (IDs only, inspect with tools): ${JSON.stringify(b.context)}\nApproval results: ${JSON.stringify(redact(approvals))}\nAdministrator request:\n${b.message}`;
+ if(b.attachments?.length){
+  for(const att of b.attachments){
+   adminPrompt+=`\n\n--- Attachment: ${att.name} ---\n${att.data}`;
+  }
+ }
+ const promptImages=b.images?.map(img=>({type:'image' as const,data:img.data,mimeType:img.mimeType||'image/png'}));
+ await session.prompt(adminPrompt,promptImages?.length?{images:promptImages}:undefined);
  if(get('adminRuns',run.id)?.status!=='running')return;const last=session.messages.filter((m:any)=>m.role==='assistant').at(-1);if(last?.stopReason==='error'||last?.stopReason==='aborted')throw Error(last.errorMessage||'Admin turn stopped or reached its limit');
  const answer=redact(session.getLastAssistantText()||'The requested tools have completed.');put('adminMessages',{threadId:run.threadId,role:'assistant',text:answer,runId:run.id});put('adminRuns',{id:run.id,status:'completed',finished:new Date().toISOString()});
  }catch(e){if(get('adminRuns',run.id)?.status==='running')put('adminRuns',{id:run.id,status:'failed',error:redact(String(e)),finished:new Date().toISOString()});}finally{clearTimeout(timer);session?.dispose();active.delete(run.threadId);starting.delete(run.threadId);}}

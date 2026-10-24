@@ -12,12 +12,13 @@ import { all,get,put,del,hash,admin,canProject,canOperate,issueInvite,redeemInvi
 import { importRepository,branches,createChange,diffChange,refreshChange,mergeChange,command,git,syncRepository } from './git.js';
 import { runtime,safeConnection } from './providers.js';
 import { enqueue,signalJob,emitAutomation,maybeAutoMerge } from './jobs.js';
-import { startPreview,stopPreview,previewLink } from './previews.js';
+import { startPreview,stopPreview,previewLink,registerPreviewIngress } from './previews.js';
 const str=z.string().trim().min(1).max(20000),id=z.string().uuid();
 const mode=z.enum(['approve','prepare','auto']);
 const kind=z.enum(['implement','review','address','conflict','test','coverage','improve','adapt']);
 const body=(req:any,schema:z.ZodType<any>)=>schema.parse(req.body);
 export async function createApp(){const app=Fastify({logger:false,forceCloseConnections:true,bodyLimit:1024*1024,...(process.env.RELAY_TLS_CERT?{https:{cert:readFileSync(process.env.RELAY_TLS_CERT),key:readFileSync(process.env.RELAY_TLS_KEY!)}}:{})});
+ registerPreviewIngress(app);
  app.setErrorHandler((err:any,_req,reply)=>{reply.code(err.statusCode||400).send({error:err instanceof z.ZodError?err.issues.map(i=>`${i.path.join('.')}: ${i.message}`).join('; '):err.message});});
  app.addHook('onSend',async(_req,reply,payload)=>{reply.header('X-Content-Type-Options','nosniff').header('Referrer-Policy','no-referrer').header('X-Frame-Options','DENY').header('Content-Security-Policy',"default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'");return payload;});
  app.addHook('preHandler',async(req:any,reply)=>{const route=req.routeOptions.url||req.url; if(!route.startsWith('/api/')||['/api/health','/api/setup','/api/redeem'].includes(route))return;const raw=req.headers.authorization?.replace(/^Bearer /,'');const d=raw&&all('devices').find(d=>d.hash===hash(raw));const u=d&&get('users',d.userId);if(!u||u.disabled)return reply.code(401).send({error:'Sign in with a device invitation.'});req.user=u;req.device=d;});
@@ -61,7 +62,7 @@ export async function createApp(){const app=Fastify({logger:false,forceCloseConn
  app.get('/api/connections/:id/login',(req:any)=>{connection(req);const s=logins.get(req.params.id);return s?{status:s.status,events:s.events,prompt:s.prompt,error:s.error}:{status:'idle'};});
  app.post('/api/connections/:id/answer',(req:any)=>{connection(req);const b=body(req,z.object({answer:z.string().min(1).max(20000)})),s=logins.get(req.params.id);if(!s?.resolve)throw Error('No authentication prompt pending');const resolve=s.resolve;s.resolve=null;s.prompt=null;resolve(b.answer);return {ok:true};});
  app.post('/api/previews',async(req:any)=>{const b=body(req,z.object({repoId:id,jobId:id.optional()}));const r=entity(req,'repos',b.repoId,true),j=b.jobId?entity(req,'jobs',b.jobId,true):undefined;if(j&&j.repoId!==r.id)throw Error('Job belongs to another repository');void startPreview(r,j,user(req).id).catch(()=>{});return {ok:true};});
- app.post('/api/previews/:id/link',(req:any)=>{const p=entity(req,'previews',req.params.id);if(p.status!=='running')throw Error('Preview is not running');return {url:previewLink(p,user(req).id,req.hostname)};});
+ app.post('/api/previews/:id/link',(req:any)=>{const p=entity(req,'previews',req.params.id);if(p.status!=='running')throw Error('Preview is not running');return {url:previewLink(p,user(req).id,base(req))};});
  app.get('/api/previews/:id/logs',async(req:any)=>{const p=entity(req,'previews',req.params.id);return {log:await command('docker',['logs','--tail','100',p.name]).catch(String)}});
  app.post('/api/previews/:id/stop',(req:any)=>{entity(req,'previews',req.params.id,true);return stopPreview(req.params.id)});
  app.get('/api/access',req=>{const u=user(req);return {users:admin(u)?all('users'):[u],devices:all('devices').filter(d=>admin(u)||d.userId===u.id).map(({hash,...d})=>d),invites:admin(u)?all('invites').map(({hash,...i})=>i):[]}});

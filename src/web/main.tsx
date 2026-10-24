@@ -7,6 +7,7 @@ import '@fontsource-variable/dm-sans';
 import '@fontsource-variable/manrope';
 import './style.css';
 import {useAttachmentState,AttachmentInput,MessageAttachments} from './attachments';
+import {isSubagent,SubagentCard,getSubagentActivityText,parseSubagentInfo} from './subagent';
 type Item=Record<string,any>;
 const token=()=>localStorage.getItem('relay.device');
 async function api(path:string,method='GET',data?:any){const r=await fetch('/api'+path,requestOptions(method,token()||undefined,data));const b=await r.json();if(!r.ok)throw Error(b.error||'Request failed');return b;}
@@ -774,13 +775,16 @@ function Detail({type,id,state,me,back,newJob,refresh,notify,run,triggerReload,r
    if(transcript.at(-1)?.type==='thinking')transcript.at(-1).data+=e.data;
    else transcript.push({...e});
   }else if(e.type==='tool'){
-   transcript.push({...e,toolId:e.data?.id||e.data?.callId,name:e.data?.name||'tool',args:e.data?.args,partialUpdate:''});
+   transcript.push({...e,toolId:e.data?.id||e.data?.callId||e.data?.toolCallId,name:e.data?.name||'tool',args:e.data?.args,partialUpdate:''});
   }else if(e.type==='tool_update'){
-   const toolId=e.data?.id||e.data?.callId;
+   const toolId=e.data?.id||e.data?.callId||e.data?.toolCallId;
    const target=transcript.slice().reverse().find(t=>t.type==='tool'&&(toolId?t.toolId===toolId:true));
-   if(target){target.partialUpdate=(target.partialUpdate||'')+(typeof e.data?.update==='string'?e.data.update:JSON.stringify(e.data?.update));}
+   if(target){
+    if(e.data?.args)target.args=e.data.args;
+    target.partialUpdate=e.data?.partialResult||(target.partialUpdate||'')+(typeof e.data?.update==='string'?e.data.update:JSON.stringify(e.data?.update||''));
+   }
   }else if(e.type==='tool_result'){
-   const toolId=e.data?.id;
+   const toolId=e.data?.id||e.data?.callId||e.data?.toolCallId;
    const target=transcript.slice().reverse().find(t=>t.type==='tool'&&(toolId?t.toolId===toolId:!t.result));
    if(target){target.result=e.data?.result;target.isError=e.data?.isError;target.durationMs=e.data?.durationMs;}
    else{transcript.push({...e});}
@@ -792,11 +796,16 @@ function Detail({type,id,state,me,back,newJob,refresh,notify,run,triggerReload,r
  let currentActivity='Working on task…';
  if(lastEvent?.type==='thinking'){currentActivity='Reasoning through solution…';}
  else if(lastEvent?.type==='tool'){
-  const tName=lastEvent.name;
-  if(tName==='run_command'||tName==='bash'){const cmd=lastEvent.args?.command||lastEvent.args?.cmd||'';currentActivity=cmd?`Executing: ${cmd.slice(0,60)}…`:'Running command…';}
-  else if(tName==='read_file'){currentActivity=`Reading ${lastEvent.args?.Path||lastEvent.args?.path||'file'}…`;}
-  else if(tName==='write_file'||tName==='edit_file'){currentActivity=`Writing changes to ${lastEvent.args?.Path||lastEvent.args?.path||'file'}…`;}
-  else{currentActivity=`Running ${tName}…`;}
+  if(isSubagent(lastEvent.name,lastEvent.args)){
+   const sInfo=parseSubagentInfo(lastEvent,item.status==='running');
+   currentActivity=sInfo?getSubagentActivityText(sInfo):'Subagent working…';
+  }else{
+   const tName=lastEvent.name;
+   if(tName==='run_command'||tName==='bash'){const cmd=lastEvent.args?.command||lastEvent.args?.cmd||'';currentActivity=cmd?`Executing: ${cmd.slice(0,60)}…`:'Running command…';}
+   else if(tName==='read_file'){currentActivity=`Reading ${lastEvent.args?.Path||lastEvent.args?.path||'file'}…`;}
+   else if(tName==='write_file'||tName==='edit_file'){currentActivity=`Writing changes to ${lastEvent.args?.Path||lastEvent.args?.path||'file'}…`;}
+   else{currentActivity=`Running ${tName}…`;}
+  }
  }else if(lastEvent?.type==='text'){currentActivity='Writing response…';}
  const hasFinalResultInTranscript=transcript.some(e=>e.type==='result'||(e.type==='text'&&item?.result&&e.data.trim()===item.result.trim()));
  const linkedJobs=(state.jobs||[]).filter((j:Item)=>j.changeId===id);
@@ -811,6 +820,9 @@ function Detail({type,id,state,me,back,newJob,refresh,notify,run,triggerReload,r
    return <details key={i} className="thinking-event" open={item.status==='running'}><summary><Sparkles size={12} className={item.status==='running'?'spin':''}/><span>Reasoning</span></summary><div className="thinking-content">{e.data}</div></details>;
   }
   if(e.type==='tool'){
+   if(isSubagent(e.name,e.args)){
+    return <SubagentCard key={i} tool={e} isRunning={!e.result&&item.status==='running'} formatToolData={formatToolData}/>;
+   }
    return <details key={i} className="tool-event" open={!e.result&&item.status==='running'}><summary>{e.result?(e.isError?<AlertCircle size={15} style={{color:'var(--danger,#ef4444)'}}/>:<Check size={15} style={{color:'var(--green,#22c55e)'}}/>):<Loader2 size={15} className="spin"/>}<span style={{fontWeight:600}}>{e.name}</span>{e.args?.command?<code>{e.args.command.slice(0,90)}</code>:e.args?.Path||e.args?.path?<code>{e.args.Path||e.args.path}</code>:null}{e.durationMs?<span style={{fontSize:'10px',color:'var(--muted)',marginLeft:'auto'}}>{(e.durationMs/1000).toFixed(1)}s</span>:null}</summary>{e.args&&Object.keys(e.args).length>0&&<div style={{marginBottom:8}}><small style={{color:'var(--muted)',fontWeight:600,display:'block',marginBottom:4}}>Arguments</small><pre>{formatToolData(e.args)}</pre></div>}{e.partialUpdate&&!e.result&&<div className="tool-partial"><small style={{color:'var(--muted)',fontWeight:600,display:'block',marginBottom:4}}>Live output</small><pre>{e.partialUpdate}</pre></div>}{e.result!==undefined&&<div style={{marginTop:8}}><small style={{color:e.isError?'var(--danger,#ef4444)':'var(--muted)',fontWeight:600,display:'block',marginBottom:4}}>{e.isError?'Error output':'Output'}</small><pre style={{maxHeight:'250px',overflow:'auto'}}>{formatToolData(e.result)}</pre></div>}</details>;
   }
   if(e.type==='tool_result'){

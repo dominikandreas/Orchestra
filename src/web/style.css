@@ -365,4 +365,303 @@
   border-color: var(--purple);
 }
 
+/* Subagents UI/UX */
+.subagent-card {
+  border: 1px solid var(--line);
+  background: var(--surface);
+  border-radius: 10px;
+  margin: 12px 0;
+  overflow: hidden;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
+  border-left: 4px solid var(--purple);
+  transition: all 0.2s ease;
+}
+.subagent-card.running {
+  border-color: rgba(102, 85, 223, 0.4);
+  box-shadow: 0 0 0 1px rgba(102, 85, 223, 0.15), 0 4px 14px rgba(102, 85, 223, 0.08);
+}
+.subagent-card.completed {
+  border-left-color: var(--green, #22c55e);
+}
+.subagent-card.failed {
+  border-left-color: var(--danger, #ef4444);
+}
+.subagent-card.agent-reviewer {
+  border-left-color: #06b6d4;
+}
+.subagent-card.agent-scout,
+.subagent-card.agent-researcher {
+  border-left-color: #f59e0b;
+}
+.subagent-card.agent-oracle,
+.subagent-card.agent-evidence-auditor {
+  border-left-color: #10b981;
+}
+
+.subagent-header {
+  padding: 10px 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  background: var(--bg);
+  cursor: pointer;
+  user-select: none;
+  border-bottom: 1px solid transparent;
+}
+.subagent-card.open .subagent-header {
+  border-bottom-color: var(--line);
+}
+.subagent-header:hover {
+  background: var(--tint);
+}
+.subagent-identity {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.subagent-tag {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: rgba(102, 85, 223, 0.12);
+  color: var(--purple);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.subagent-pill {
+  font-size: 11px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 12px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  color: var(--text);
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.subagent-pill.agent-reviewer {
+  color: #0891b2;
+  border-color: rgba(6, 182, 212, 0.3);
+  background: rgba(6, 182, 212, 0.08);
+}
+.subagent-pill.agent-scout,
+.subagent-pill.agent-researcher {
+  color: #d97706;
+  border-color: rgba(245, 158, 11, 0.3);
+  background: rgba(245, 158, 11, 0.08);
+}
+.subagent-pill.agent-oracle,
+.subagent-pill.agent-evidence-auditor {
+  color: #059669;
+  border-color: rgba(16, 185, 129, 0.3);
+  background: rgba(16, 185, 129, 0.08);
+}
+.subagent-pill.agent-worker {
+  color: var(--purple);
+  border-color: rgba(102, 85, 223, 0.3);
+  background: var(--tint);
+}
+
+.subagent-model {
+  font-size: 10px;
+  color: var(--muted);
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1px 6px;
+  background: var(--bg);
+  border-radius: 4px;
+  border: 1px solid var(--line);
+}
+.subagent-header-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.subagent-metric {
+  font-size: 10px;
+  color: var(--muted);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+.subagent-status-badge {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: 10px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.subagent-status-badge.running {
+  background: rgba(102, 85, 223, 0.12);
+  color: var(--purple);
+}
+.subagent-status-badge.completed {
+  background: rgba(34, 197, 94, 0.12);
+  color: var(--green, #22c55e);
+}
+.subagent-status-badge.failed {
+  background: rgba(239, 68, 68, 0.12);
+  color: var(--danger, #ef4444);
+}
+
+.subagent-body {
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.subagent-task {
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.5;
+  background: var(--bg);
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+}
+.subagent-task strong {
+  color: var(--text);
+  margin-right: 4px;
+}
+.subagent-tabs {
+  display: flex;
+  gap: 6px;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 8px;
+}
+.subagent-tab-btn {
+  font-size: 11px;
+  padding: 4px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: var(--bg);
+  color: var(--muted);
+  cursor: pointer;
+}
+.subagent-tab-btn.active {
+  background: var(--tint);
+  border-color: var(--purple);
+  color: var(--purple);
+  font-weight: 600;
+}
+
+.subagent-live-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--purple);
+  background: var(--tint);
+  border: 1px dashed var(--purple);
+  padding: 8px 12px;
+  border-radius: 6px;
+}
+.subagent-current-tool {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  padding: 6px 10px;
+  background: #181c25;
+  color: #e2e8f0;
+  border-radius: 6px;
+}
+.subagent-current-tool code {
+  color: #38bdf8;
+  font-size: 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.subagent-log-section {
+  border: 1px solid var(--line);
+  background: var(--bg);
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-size: 11px;
+}
+.subagent-log-section summary {
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+}
+.subagent-tools-list {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.subagent-tool-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10px;
+  padding: 4px 8px;
+  background: var(--surface);
+  border-radius: 4px;
+  border: 1px solid var(--line);
+}
+.subagent-tool-item strong {
+  color: var(--text);
+}
+.subagent-tool-item code {
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.subagent-partial-output {
+  margin-top: 8px;
+  background: #181c25;
+  color: #94a3b8;
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-size: 10px;
+  max-height: 180px;
+  overflow: auto;
+}
+.subagent-partial-output pre {
+  margin: 4px 0 0;
+  white-space: pre-wrap;
+  font-family: inherit;
+}
+.subagent-output {
+  margin-top: 4px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 12px 14px;
+}
+.subagent-output-header {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--purple);
+  margin-bottom: 8px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.subagent-output .prose {
+  font-size: 12px;
+  line-height: 1.6;
+}
+
 

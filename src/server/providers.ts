@@ -27,7 +27,7 @@ export function ensureAgyEnvironment(){
   process.env.AGY_PI_BIN=wrapperPath;
  }
  if(!process.env.AGY_PI_TURN_TIMEOUT_MS){
-  process.env.AGY_PI_TURN_TIMEOUT_MS='600000';
+  process.env.AGY_PI_TURN_TIMEOUT_MS='1800000';
  }
  if(!process.env.AGY_PI_MODELS){
   try{

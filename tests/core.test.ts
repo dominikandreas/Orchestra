@@ -160,3 +160,52 @@ test('project management: patch details, reject delete when non-empty, and delet
  assert.match(delSelf.json().error,/self-repository/);
  store.del('repos',selfRepo.id);
 });
+
+test('agy provider registers discovered gemini-4-argon and worker resolves it',async()=>{
+ const providers=await import('../src/server/providers.js');
+ providers.ensureAgyModelsDiscovered();
+ const r=await providers.runtime();
+ const agyProvider=r.getProvider('agy');
+ if(agyProvider){
+  const model=r.getModel('agy','gemini-4-argon');
+  assert.ok(model,'gemini-4-argon should be found in agy provider');
+  assert.equal(model.id,'gemini-4-argon');
+ }
+});
+
+test('PATCH /api/jobs/:id updates connection, model, and thinking effort, and action resume honors them',async()=>{
+ const conn=store.put('connections',{name:'Agy Connection',ownerId:owner.id,provider:'agy',status:'connected'});
+ const job=store.put('jobs',{
+  repoId:repo.id,
+  projectId:project.id,
+  title:'Test switch model',
+  prompt:'Do something',
+  kind:'implement',
+  status:'blocked',
+  provider:'old-prov',
+  model:'old-model',
+  thinkingLevel:'off',
+  authorId:owner.id
+ });
+
+ const viewerPatch=await request('PATCH',`/api/jobs/${job.id}`,viewerToken,{model:'gemini-4-argon'});
+ assert.equal(viewerPatch.statusCode,400);
+
+ const patchRes=await request('PATCH',`/api/jobs/${job.id}`,ownerToken,{
+  connectionId:conn.id,
+  model:'gemini-4-argon',
+  thinkingLevel:'medium'
+ });
+ assert.equal(patchRes.statusCode,200);
+ const updated=patchRes.json();
+ assert.equal(updated.connectionId,conn.id);
+ assert.equal(updated.model,'gemini-4-argon');
+ assert.equal(updated.provider,'agy');
+ assert.equal(updated.thinkingLevel,'medium');
+
+ const stored=store.get('jobs',job.id);
+ assert.ok(stored);
+ assert.equal(stored.model,'gemini-4-argon');
+ assert.equal(stored.provider,'agy');
+ assert.equal(stored.thinkingLevel,'medium');
+});

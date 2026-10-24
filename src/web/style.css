@@ -134,6 +134,29 @@
   background: var(--purple) !important;
   color: white !important;
 }
+.model-selector-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 5px 9px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.model-selector-btn:hover:not(:disabled) {
+  border-color: var(--purple);
+  color: var(--purple);
+  background: var(--tint);
+}
+.model-selector-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
 .submit-task-btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;

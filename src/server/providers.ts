@@ -16,14 +16,17 @@ export function invalidateExtensionProvidersCache(){
 export function ensureAgyModelsDiscovered(){
  if(!process.env.AGY_PI_MODELS){
   try{
-   const res=spawnSync('agy',['models'],{encoding:'utf8',timeout:5000});
+   const res=spawnSync('agy',['models'],{encoding:'utf8',timeout:8000,env:{...process.env,HOME:process.env.HOME||''}});
    if(res.status===0&&res.stdout){
-    const ids=res.stdout.split('\n').map(l=>l.split('\t')[0]?.trim()).filter(id=>id&&!id.includes(' '));
+    const ids=res.stdout.split('\n')
+      .map(l=>l.replace(/\r/g,'').trim().split('\t')[0]?.trim())
+      .filter(id=>id&&!id.includes(' ')&&!id.includes('...'));
     if(ids.length)process.env.AGY_PI_MODELS=ids.join(',');
    }
   }catch{}
  }
 }
+ensureAgyModelsDiscovered();
 
 export async function getExtensionProviders(){
  const enabledRecords=all('adminPlugins').filter(p=>p.status==='enabled');

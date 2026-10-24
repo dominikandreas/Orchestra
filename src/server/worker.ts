@@ -12,7 +12,18 @@ const send=(type:string,data:any)=>process.send?.({type,data});
 process.on('message',async(m:any)=>{try{if(m.type==='cancel'){await session?.abort();await stopSandbox(container);process.exit(0);}else if(m.type==='steer')await session?.steer(m.text,m.images);else if(m.type==='followup')await session?.followUp(m.text,m.images);}catch(e){send('notice',String(e))}});
 try {
  await startSandbox(container,job.path,repo.image,job.kind==='review');send('notice','Isolated workspace ready');
- const mr=await runtime(job.connectionId);const model=mr.getModel(job.provider,job.model);if(!model)throw Error('Selected model is not available. Choose a model in repository settings.');
+ const mr=await runtime(job.connectionId);
+ let model=mr.getModel(job.provider,job.model);
+ if(!model&&job.model){
+  const clean=job.model.trim().toLowerCase().replace(/\s+/g,'-');
+  const base=clean.replace(/-(high|medium|low)$/,'');
+  model=mr.getModel(job.provider,clean)||mr.getModel(job.provider,base)||mr.getModel(job.provider,`${base}-medium`)||mr.getModel(job.provider,`${base}-high`)||mr.getModel(job.provider,`${base}-low`);
+  if(!model){
+   const allModels=mr.getModels(job.provider);
+   model=allModels.find((m:any)=>m.id.toLowerCase()===clean||m.name.toLowerCase()===job.model.toLowerCase());
+  }
+ }
+ if(!model)throw Error('Selected model is not available. Choose a model in repository settings.');
  const resources=all('resources').filter(x=>x.projectId===repo.projectId&&x.active);
  const prompt=`You are Orchestra, an autonomous software engineering collaborator. Work only in /workspace using the workspace tool. Describe evidence, remaining issues and tests honestly. You cannot merge, change app permissions, or activate extensions. Do not modify .git. ${job.kind==='review'?'Review without edits. Report findings with file paths, lines, severity and rationale.':'Implement the requested work carefully and run relevant tests.'}\n${resources.filter(x=>x.kind!=='extension').map(x=>x.content).join('\n\n')}`;
  let loader:ResourceLoader={getExtensions:()=>({extensions:[],errors:[],runtime:createExtensionRuntime()}),getSkills:()=>({skills:[],diagnostics:[]}),getPrompts:()=>({prompts:[],diagnostics:[]}),getThemes:()=>({themes:[],diagnostics:[]}),getAgentsFiles:()=>({agentsFiles:[]}),getSystemPrompt:()=>prompt,getSystemPromptSource:()=>undefined,getAppendSystemPrompt:()=>[],getAppendSystemPromptSources:()=>[],extendResources:()=>{},reload:async()=>{}};

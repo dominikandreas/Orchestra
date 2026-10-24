@@ -6,6 +6,7 @@ import { get,all,put,dataDir,event,canOperate } from './store.js';
 import { runtime } from './providers.js';
 import { startSandbox,stopSandbox,dockerExec } from './docker.js';
 const id=process.argv[2],job=get('jobs',id)!,repo=get('repos',job.repoId)!;
+if(job?.path){try{process.chdir(job.path);}catch{}}
 let session:any;const container=`relay-job-${id}`;
 process.on('disconnect',()=>{void stopSandbox(container).finally(()=>process.exit(0))});
 const send=(type:string,data:any)=>process.send?.({type,data});

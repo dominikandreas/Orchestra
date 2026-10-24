@@ -1,8 +1,9 @@
 import { ModelRuntime, DefaultResourceLoader, SettingsManager } from '@earendil-works/pi-coding-agent';
 import type { CredentialStore,Credential } from '@earendil-works/pi-ai';
-import { all,get,put,del,encrypt,decrypt,transaction,token } from './store.js';
+import { all,get,put,del,encrypt,decrypt,transaction,token,dataDir } from './store.js';
 import { packageManager, pluginPaths, adminDir } from './admin-control.js';
 import { join } from 'node:path';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 
 let cachedExtensionProviders: any[] | null = null;
@@ -13,7 +14,21 @@ export function invalidateExtensionProvidersCache(){
  lastExtensionFingerprint='';
 }
 
-export function ensureAgyModelsDiscovered(){
+export function ensureAgyEnvironment(){
+ const binDir=join(dataDir,'bin');
+ const wrapperPath=join(binDir,'agy-wrapper');
+ if(!existsSync(wrapperPath)){
+  try{
+   mkdirSync(binDir,{recursive:true});
+   writeFileSync(wrapperPath,'#!/bin/sh\nexec agy --dangerously-skip-permissions "$@"\n',{mode:0o755});
+  }catch{}
+ }
+ if(!process.env.AGY_PI_BIN&&existsSync(wrapperPath)){
+  process.env.AGY_PI_BIN=wrapperPath;
+ }
+ if(!process.env.AGY_PI_TURN_TIMEOUT_MS){
+  process.env.AGY_PI_TURN_TIMEOUT_MS='600000';
+ }
  if(!process.env.AGY_PI_MODELS){
   try{
    const res=spawnSync('agy',['models'],{encoding:'utf8',timeout:8000,env:{...process.env,HOME:process.env.HOME||''}});
@@ -26,7 +41,8 @@ export function ensureAgyModelsDiscovered(){
   }catch{}
  }
 }
-ensureAgyModelsDiscovered();
+export const ensureAgyModelsDiscovered = ensureAgyEnvironment;
+ensureAgyEnvironment();
 
 export async function getExtensionProviders(){
  const enabledRecords=all('adminPlugins').filter(p=>p.status==='enabled');

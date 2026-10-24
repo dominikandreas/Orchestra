@@ -254,6 +254,279 @@ function TaskModal({repoId,changeId,jobKind='implement',state,catalog,close,done
  </Modal>;
 }
 
+function NewRepoModal({projects,defaultProjectId,onNewProject,close,onDone}:any){
+ const [tab,setTab]=useState<'create'|'connect'>('create');
+ const [projectId,setProjectId]=useState(defaultProjectId||projects[0]?.id||'');
+ const [name,setName]=useState('');
+ const [source,setSource]=useState('');
+ const [customSource,setCustomSource]=useState(false);
+ const [base,setBase]=useState('main');
+ const [busy,setBusy]=useState(false);
+ const [error,setError]=useState('');
+
+ const onNameChange=(val:string)=>{
+  setName(val);
+  if(!customSource&&tab==='create'){
+   const slug=val.trim().toLowerCase().replace(/[^a-z0-9._-]/g,'-');
+   setSource(slug?`~/dev/${slug}`:'');
+  }
+ };
+
+ const handleTabChange=(newTab:'create'|'connect')=>{
+  setTab(newTab);
+  setError('');
+  if(newTab==='create'&&!customSource){
+   const slug=name.trim().toLowerCase().replace(/[^a-z0-9._-]/g,'-');
+   setSource(slug?`~/dev/${slug}`:'');
+  }else if(newTab==='connect'&&source.startsWith('~/dev/')){
+   setSource('');
+   setCustomSource(false);
+  }
+ };
+
+ const handleSubmit=async(e:React.FormEvent)=>{
+  e.preventDefault();
+  if(!projectId){
+   setError('Please select or create a project first');
+   return;
+  }
+  if(!name.trim()){
+   setError('Repository name is required');
+   return;
+  }
+  if(!source.trim()){
+   setError(tab==='create'?'Local destination path is required':'Local path or Git URL is required');
+   return;
+  }
+  setBusy(true);
+  setError('');
+  try{
+   const r=await api('/repos','POST',{
+    projectId,
+    name:name.trim(),
+    source:source.trim(),
+    base:base.trim()||'main',
+    createLocal:tab==='create'
+   });
+   await onDone(r);
+  }catch(err){
+   setError((err as Error).message);
+  }finally{
+   setBusy(false);
+  }
+ };
+
+ return (
+  <Modal title={tab==='create'?'Create a new repository':'Connect an existing repository'} onClose={close}>
+   <div className="steps">
+    <span className="current">1 Repository</span>
+    <ChevronRight size={14}/>
+    <span>2 Configuration</span>
+    <ChevronRight size={14}/>
+    <span>3 Ready</span>
+   </div>
+   <div className="tabs" style={{margin:'16px 0 20px',gap:'16px'}}>
+    <button
+     type="button"
+     className={tab==='create'?'active':''}
+     onClick={()=>handleTabChange('create')}
+    >
+     <Plus size={14}/> Create new local repository
+    </button>
+    <button
+     type="button"
+     className={tab==='connect'?'active':''}
+     onClick={()=>handleTabChange('connect')}
+    >
+     <FolderGit2 size={14}/> Connect existing repository
+    </button>
+   </div>
+   <p className="muted" style={{marginTop:'-10px',marginBottom:'16px'}}>
+    {tab==='create'
+     ?'Initialize a brand-new Git repository on this server and connect it to Orchestra.'
+     :'Orchestra creates its own clone. Your existing checkout stays yours.'}
+   </p>
+   <form onSubmit={handleSubmit}>
+    <label className="field">
+     <span>Project</span>
+     <div style={{display:'flex',gap:'8px'}}>
+      <select
+       style={{flex:1}}
+       value={projectId}
+       onChange={e=>setProjectId(e.target.value)}
+       required
+      >
+       {projects.map((p:Item)=><option key={p.id} value={p.id}>{p.name}</option>)}
+      </select>
+      {onNewProject&&(
+       <button
+        type="button"
+        className="secondary"
+        title="Create new project"
+        onClick={onNewProject}
+        style={{whiteSpace:'nowrap',padding:'0 12px'}}
+       >
+        <Plus size={14}/> New
+       </button>
+      )}
+     </div>
+    </label>
+    <label className="field">
+     <span>Repository name</span>
+     <input
+      type="text"
+      required
+      value={name}
+      placeholder={tab==='create'?'mars-sim':'my-app'}
+      onChange={e=>onNameChange(e.target.value)}
+     />
+    </label>
+    <label className="field">
+     <span>{tab==='create'?'Local destination path':'Local path or Git URL'}</span>
+     <input
+      type="text"
+      required
+      value={source}
+      placeholder={tab==='create'?'~/dev/mars-sim':'/home/you/code/my-app'}
+      onChange={e=>{
+       setSource(e.target.value);
+       setCustomSource(true);
+      }}
+     />
+     <small>
+      {tab==='create'
+       ?'Directory where git init will create your repository with an initial commit.'
+       :'An absolute path on this server, an HTTPS URL, or an SSH Git URL.'}
+     </small>
+    </label>
+    <label className="field">
+     <span>Default branch</span>
+     <input
+      type="text"
+      value={base}
+      placeholder="main"
+      onChange={e=>setBase(e.target.value)}
+     />
+    </label>
+    {error&&<div role="alert" className="error"><AlertCircle size={16}/>{error}</div>}
+    <div className="form-footer" style={{marginTop:'20px'}}>
+     <button type="button" className="secondary" onClick={close} disabled={busy}>Cancel</button>
+     <button type="submit" className="primary" disabled={busy}>
+      {busy?<Loader2 className="spin" size={16}/>:<ArrowRight size={16}/>}
+      {busy?'Setting up…':tab==='create'?'Create repository':'Import repository'}
+     </button>
+    </div>
+   </form>
+  </Modal>
+ );
+}
+
+function ManageProjectModal({project,repos,close,onUpdated,onDeleted}:any){
+ const [name,setName]=useState(project.name||'');
+ const [description,setDescription]=useState(project.description||'');
+ const [busy,setBusy]=useState(false);
+ const [delBusy,setDelBusy]=useState(false);
+ const [error,setError]=useState('');
+
+ const projectRepos=repos.filter((r:Item)=>r.projectId===project.id);
+
+ const handleSave=async(e:React.FormEvent)=>{
+  e.preventDefault();
+  if(!name.trim()){
+   setError('Project name is required');
+   return;
+  }
+  setBusy(true);
+  setError('');
+  try{
+   const updated=await api(`/projects/${project.id}`,'PATCH',{
+    name:name.trim(),
+    description:description.trim()
+   });
+   await onUpdated(updated);
+  }catch(err){
+   setError((err as Error).message);
+  }finally{
+   setBusy(false);
+  }
+ };
+
+ const handleDelete=async()=>{
+  if(projectRepos.length>0){
+   setError(`Cannot delete this project while it contains ${projectRepos.length} repository/repositories. Remove them first.`);
+   return;
+  }
+  if(!confirm(`Are you sure you want to delete project "${project.name}"? This cannot be undone.`))return;
+  setDelBusy(true);
+  setError('');
+  try{
+   await api(`/projects/${project.id}`,'DELETE');
+   await onDeleted(project.id);
+  }catch(err){
+   setError((err as Error).message);
+  }finally{
+   setDelBusy(false);
+  }
+ };
+
+ return (
+  <Modal title={`Manage project: ${project.name}`} onClose={close}>
+   <p className="muted">Update project details, or remove this project if it is no longer needed.</p>
+   <form onSubmit={handleSave}>
+    <label className="field">
+     <span>Project name</span>
+     <input
+      type="text"
+      required
+      value={name}
+      onChange={e=>setName(e.target.value)}
+     />
+    </label>
+    <label className="field">
+     <span>Description</span>
+     <textarea
+      rows={3}
+      value={description}
+      placeholder="What is this project building?"
+      onChange={e=>setDescription(e.target.value)}
+     />
+    </label>
+    {error&&<div role="alert" className="error" style={{marginTop:'12px'}}><AlertCircle size={16}/>{error}</div>}
+    <div className="form-footer" style={{marginTop:'16px'}}>
+     <button type="button" className="secondary" onClick={close} disabled={busy||delBusy}>Cancel</button>
+     <button type="submit" className="primary" disabled={busy||delBusy}>
+      {busy?<Loader2 className="spin" size={16}/>:<Check size={16}/>}
+      {busy?'Saving…':'Save changes'}
+     </button>
+    </div>
+   </form>
+   <div style={{marginTop:'24px',paddingTop:'18px',borderTop:'1px solid var(--line)'}}>
+    <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+     <div>
+      <strong style={{fontSize:'13px',display:'block'}}>Delete project</strong>
+      <small style={{color:'var(--muted)'}}>
+       {projectRepos.length>0
+        ?`Contains ${projectRepos.length} repository/repositories. Repositories must be removed first.`
+        :'Permanently delete this project and associated workflows.'}
+      </small>
+     </div>
+     <button
+      type="button"
+      className="secondary"
+      style={{color:'var(--danger,#ef4444)',borderColor:'rgba(239,68,68,0.3)'}}
+      disabled={busy||delBusy||projectRepos.length>0}
+      title={projectRepos.length>0?'Remove repositories first':`Delete ${project.name}`}
+      onClick={handleDelete}
+     >
+      {delBusy?<Loader2 className="spin" size={14}/>:<Trash2 size={14}/>}
+      {delBusy?'Deleting…':'Delete project'}
+     </button>
+    </div>
+   </div>
+  </Modal>
+ );
+}
+
 function App(){
  const initialRoute=useRef(parseRoute(window.location.pathname,window.location.search)).current;
  const [me,M]=useState<Item|null>(null),[loading,L]=useState(true),[state,S]=useState<Item>({projects:[],repos:[],changes:[],jobs:[],workflows:[],connections:[],previews:[],resources:[]}),[page,setPageState]=useState(initialRoute.page),[project,setProjectState]=useState(initialRoute.project),[modal,MD]=useState<React.ReactNode>(null),[toast,T]=useState(''),[query,Q]=useState(''),[theme,TH]=useState(localStorage.getItem('relay.theme')||'light'),[detail,setDetailState]=useState<{type:string,id:string}|null>(initialRoute.detail),[catalog,CAT]=useState<Item[]>([]),[adminOpen,setAdminOpen]=useState(false),[adminPending,setAdminPending]=useState(0),[reloading,setReloading]=useState(false);
@@ -340,8 +613,9 @@ function App(){
  const findRepo=(id:string)=>state.repos.find((r:Item)=>r.id===id);const repoOptions=state.repos.filter((r:Item)=>r.status==='ready').map((r:Item)=>({value:r.id,label:r.name}));
  const run=async(fn:()=>Promise<any>)=>{try{await fn();await refresh()}catch(e){notify((e as Error).message)}};
  function newProject(){MD(<Modal title="A home for your repositories" onClose={close}><p className="muted">Group related repositories, people, and automation in a project.</p><Form fields={[{key:'name',label:'Project name',placeholder:'Your next big thing'},{key:'description',label:'Description',optional:true,placeholder:'What are we building?'}]} submit="Create project" onSubmit={async b=>{const p=await api('/projects','POST',b);navigate('repositories',null,p.id);await done();newRepo(p.id)}}/></Modal>)}
- function newRepo(projectId?:string){if(!state.projects.length&&!projectId){newProject();return;}MD(<Modal title="Bring a repository into Orchestra" onClose={close}><div className="steps"><span className="current">1 Repository</span><ChevronRight size={14}/><span>2 Configuration</span><ChevronRight size={14}/><span>3 Ready</span></div><p className="muted">Orchestra creates its own clone. Your existing checkout stays yours.</p><Form fields={[{key:'projectId',label:'Project',value:projectId||project!=='all'&&project||undefined,options:state.projects.map((p:Item)=>({value:p.id,label:p.name})).concat(projectId&&!state.projects.find((p:Item)=>p.id===projectId)?[{value:projectId,label:'New project'}]:[])},{key:'name',label:'Repository name',placeholder:'my-app'},{key:'source',label:'Local path or Git URL',placeholder:'/home/you/code/my-app',help:'An absolute path on this server, an HTTPS URL, or an SSH Git URL.'}]} submit="Import repository" onSubmit={async b=>{const r=await api('/repos','POST',b);await refresh();configureRepo(r,true)}}/></Modal>)}
- async function configureRepo(r:Item,onboarding=false){try{const inspect=await api(`/repos/${r.id}/inspect`);MD(<Modal title={onboarding?'Make it work your way':`${r.name} settings`} onClose={close}><p className="muted">Choose the model, guardrails, and commands for this repository. Commands run in an isolated container.</p><Form fields={[{key:'base',label:'Base branch',value:r.base,options:inspect.branches.map((b:string)=>({value:b,label:b}))},{key:'connectionId',label:'AI connection',value:r.connectionId||'',options:[{value:'',label:'Connect later'},...state.connections.filter((c:Item)=>c.status==='connected').map((c:Item)=>({value:c.id,label:c.name}))]},{key:'model',label:'Model',value:r.model||'',optional:true,optionsFor:(v:any)=>{const conn=state.connections.find((c:Item)=>c.id===v.connectionId);const mList=conn?.models||catalog.find(p=>p.id===conn?.provider)?.models||conn?.config?.models||[];return [{value:'',label:'Choose a model'},...mList.map((m:Item)=>({value:m.id,label:m.name||m.id}))];}},{key:'testCommand',label:'Test command',value:r.testCommand||inspect.suggestions.testCommand,optional:true,placeholder:'npm ci && npm test'},{key:'previewCommand',label:'Preview command',value:r.previewCommand||inspect.suggestions.previewCommand,optional:true,placeholder:'npm ci && npm run dev -- --host 0.0.0.0'},{key:'port',label:'Container preview port',type:'number',value:r.port||5173},{key:'image',label:'Container image',value:r.image||'node:24-bookworm'},{key:'thinkingLevel',label:'Thinking effort',value:r.thinkingLevel||'off',help:'Applied only to models that support reasoning; unsupported models ignore it.',options:['off','minimal','low','medium','high','xhigh'].map(value=>({value,label:value}))},{key:'autonomy',label:'Maximum autonomy',options:modes,value:r.autonomy||'prepare'},{key:'requireReview',label:'Require an approved review before merging',type:'checkbox',value:r.requireReview??true}]} submit={onboarding?'Finish setup':'Save settings'} onSubmit={async b=>{await api(`/repos/${r.id}`,'PATCH',b);await done();notify(`${r.name} is ready. Add a provider connection to start AI work.`)}}/></Modal>)}catch(e){notify((e as Error).message)}}
+ function manageProject(p:Item){MD(<ManageProjectModal project={p} repos={state.repos} close={close} onUpdated={async(updated:Item)=>{await done();notify(`Project "${updated.name}" updated`)}} onDeleted={async(deletedId:string)=>{if(project===deletedId)PR('all');await done();notify(`Project "${p.name}" deleted`)}}/>)}
+ function newRepo(projectId?:string){if(!state.projects.length&&!projectId){newProject();return;}MD(<NewRepoModal projects={state.projects} defaultProjectId={projectId||(project!=='all'?project:undefined)} onNewProject={newProject} close={close} onDone={async(r:Item)=>{await refresh();configureRepo(r,true)}}/>)}
+ async function configureRepo(r:Item,onboarding=false){try{const inspect=await api(`/repos/${r.id}/inspect`);MD(<Modal title={onboarding?'Make it work your way':`${r.name} settings`} onClose={close}><p className="muted">Choose the model, guardrails, and commands for this repository. Commands run in an isolated container.</p><Form fields={[{key:'base',label:'Base branch',value:r.base,options:inspect.branches.map((b:string)=>({value:b,label:b}))},{key:'connectionId',label:'AI connection',value:r.connectionId||'',options:[{value:'',label:'Connect later'},...state.connections.filter((c:Item)=>c.status==='connected').map((c:Item)=>({value:c.id,label:c.name}))]},{key:'model',label:'Model',value:r.model||'',optional:true,optionsFor:(v:any)=>{const conn=state.connections.find((c:Item)=>c.id===v.connectionId);const mList=conn?.models||catalog.find(p=>p.id===conn?.provider)?.models||conn?.config?.models||[];return [{value:'',label:'Choose a model'},...mList.map((m:Item)=>({value:m.id,label:m.name||m.id}))];}},{key:'testCommand',label:'Test command',value:r.testCommand||inspect.suggestions.testCommand,optional:true,placeholder:'npm ci && npm test'},{key:'previewCommand',label:'Preview command',value:r.previewCommand||inspect.suggestions.previewCommand,optional:true,placeholder:'npm ci && npm run dev -- --host 0.0.0.0'},{key:'port',label:'Container preview port',type:'number',value:r.port||5173},{key:'image',label:'Container image',value:r.image||'node:24-bookworm'},{key:'thinkingLevel',label:'Thinking effort',value:r.thinkingLevel||'off',help:'Applied only to models that support reasoning; unsupported models ignore it.',options:['off','minimal','low','medium','high','xhigh'].map(value=>({value,label:value}))},{key:'autonomy',label:'Maximum autonomy',options:modes,value:r.autonomy||'prepare'},{key:'requireReview',label:'Require an approved review before merging',type:'checkbox',value:r.requireReview??true}]} submit={onboarding?'Finish setup':'Save settings'} onSubmit={async b=>{await api(`/repos/${r.id}`,'PATCH',b);await done();notify(`${r.name} is ready. Add a provider connection to start AI work.`)}}/>{!onboarding&&isAdmin&&!r.self&&<div style={{marginTop:'22px',paddingTop:'16px',borderTop:'1px solid var(--line)',display:'flex',justifyContent:'space-between',alignItems:'center'}}><div><strong style={{fontSize:'13px',display:'block'}}>Remove repository</strong><small style={{color:'var(--muted)'}}>Remove from Orchestra. Your local repository directory will not be touched.</small></div><button type="button" className="secondary" style={{color:'var(--danger,#ef4444)',borderColor:'rgba(239,68,68,0.3)'}} onClick={async()=>{if(!confirm(`Remove repository "${r.name}" from Orchestra? Your source files on disk will NOT be touched.`))return;try{await api(`/repos/${r.id}`,'DELETE');await done();notify(`Removed repository "${r.name}" from Orchestra`);}catch(e){notify((e as Error).message);}}}><Trash2 size={14}/> Remove repository</button></div>}</Modal>)}catch(e){notify((e as Error).message)}}
  function newJob(repoId?:string,changeId?:string,jobKind='implement'){if(!repoOptions.length){newRepo();return;}MD(<TaskModal repoId={repoId} changeId={changeId} jobKind={jobKind} state={state} catalog={catalog} close={close} done={done} openJob={openJob}/>)}
  function newWorkflow(){if(!repoOptions.length){newRepo();return;}MD(<Modal title="Let the next step happen automatically" onClose={close}><Form fields={[{key:'name',label:'Workflow name',placeholder:'Review every new change'},{key:'repoId',label:'Repository',options:repoOptions},{key:'trigger',label:'When',options:[{value:'change_created',label:'A change request is created'},{value:'change_updated',label:'A change request is updated'},{value:'comment',label:'A comment is added'},{value:'conflict',label:'Merge conflicts are detected'},{value:'test_failed',label:'Tests fail'},{value:'schedule',label:'On a recurring schedule'}]},{key:'kind',label:'Do',options:kinds,value:'review'},{key:'prompt',label:'Agent instructions',type:'textarea',placeholder:'Review the changes for correctness, regressions, and missing tests.'},{key:'intervalMinutes',label:'Schedule interval (minutes)',type:'number',value:60,help:'Used only for recurring schedules. Minimum 5 minutes.'},{key:'thinkingLevel',label:'Thinking effort (reasoning-capable models only)',options:['off','minimal','low','medium','high','xhigh'].map(value=>({value,label:value})),value:'off'},{key:'autonomy',label:'Autonomy',options:modes}]} submit="Enable workflow" onSubmit={async b=>{await api('/workflows','POST',b);await done()}}/></Modal>)}
  function createCR(){MD(<CreateChangeRequestModal state={state} catalog={catalog} close={close} onCreated={async(jobId:string)=>{await done();openJob(jobId)}} defaultRepoId={project!=='all'?state.repos.find((r:Item)=>r.projectId===project)?.id:undefined}/>)}
@@ -350,13 +624,13 @@ function App(){
  if(loading)return <div className="loading"><Loader2 className="spin"/>Opening Orchestra…</div>;
  if(!me)return <Welcome onLogin={async u=>{M(u);await refresh();navigate(pageRef.current,detailRef.current,projectRef.current,true);}}/>;
  const running=jobs.filter((j:Item)=>j.status==='running');const attention=jobs.filter((j:Item)=>['blocked','failed','awaiting_approval','interrupted'].includes(j.status));const open=changes.filter((c:Item)=>c.status==='open');
- return <div className="app"><aside className="sidebar"><a className="brand" onClick={()=>{P('overview');D(null);setAdminOpen(false)}}><span className="brandmark"><GitBranch size={23}/></span>orchestra</a><button className="workspace-switch" onClick={()=>{P('repositories');D(null);setAdminOpen(false)}}><div className="workspace-avatar">{me.name[0].toUpperCase()}</div><span>{me.name}'s workspace<small>Private · {label(me.role)}</small></span><ChevronDown size={14}/></button><div className="nav-label">WORKSPACE</div><nav>{[{id:'overview',name:'Overview',icon:LayoutDashboard},{id:'repositories',name:'Repositories',icon:FolderGit2},{id:'changes',name:'Change requests',icon:GitPullRequest,count:open.length},{id:'work',name:'Agent work',icon:Sparkles,count:running.length},{id:'automations',name:'Automations',icon:Zap},{id:'previews',name:'Previews',icon:Box}].map(n=><button key={n.id} className={page===n.id&&!detail&&!adminOpen?'active':''} onClick={()=>{P(n.id);D(null);setAdminOpen(false)}}><n.icon size={18}/>{n.name}{!!n.count&&<span className="nav-count">{n.count}</span>}</button>)}{isAdmin&&<button className={adminOpen?'active':''} onClick={()=>setAdminOpen(o=>!o)} aria-label="Admin AI"><MessageSquare size={18}/>Admin AI{adminPending>0&&<span className="nav-count">{adminPending}</span>}</button>}</nav><div className="nav-label project-label">PROJECTS{isAdmin&&<button className="icon-button" title="New project" onClick={newProject}><Plus size={14}/></button>}</div><div className="project-list"><button className={project==='all'?'selected':''} onClick={()=>PR('all')}><span className="project-dot all"/>All projects</button>{state.projects.map((p:Item,i:number)=><button key={p.id} className={project===p.id?'selected':''} onClick={()=>PR(p.id)}><span className={`project-dot c${i%4}`}/>{p.name}</button>)}{!state.projects.length&&<p className="sidebar-note">Your next idea starts here.</p>}</div><div className="sidebar-bottom"><div className="system-note"><span className="pulse-dot"/><span>Local engine online<small>Powered by Pi</small></span><button className="icon-button" title={isAdmin?'Restart service & reload':'Reload dashboard'} onClick={triggerReload} disabled={reloading}><RotateCw size={14} className={reloading?'spin':''}/></button></div><nav><button className={page==='settings'?'active':''} onClick={()=>{P('settings');D(null);setAdminOpen(false)}}><Settings2 size={18}/>Settings & connections</button></nav><div className="profile"><span className="avatar">{me.name[0].toUpperCase()}</span><span>{me.name}<small>{label(me.role)}</small></span><button className="icon-button" aria-label="Toggle theme" onClick={()=>TH(theme==='light'?'dark':'light')}>{theme==='light'?<Moon size={17}/>:<Sun size={17}/>}</button></div></div></aside>
- <div className="main"><header className="topbar"><div className="breadcrumb"><span>Workspace</span><ChevronRight size={13}/><strong>{detail?label(detail.type):label(page)}</strong>{project!=='all'&&<><ChevronRight size={13}/><span>{state.projects.find((p:Item)=>p.id===project)?.name}</span></>}</div><button className="search-trigger" onClick={()=>MD(<SearchModal state={state} close={close} select={(type,id)=>{if(type==='job')openJob(id);else openChange(id);close()}}/>)}><Search size={15}/><span>Jump to anything</span><kbd>⌘ K</kbd></button><div className="topbar-actions"><button className="reload-btn" title={isAdmin?'Rebuild, restart service, and reload dashboard':'Reload dashboard'} onClick={triggerReload} disabled={reloading}><RotateCw size={14} className={reloading?'spin':''}/><span>{reloading?'Reloading…':'Reload'}</span></button><span className="local-label"><span/>Local workspace</span></div></header>
+ return <div className="app"><aside className="sidebar"><a className="brand" onClick={()=>{P('overview');D(null);setAdminOpen(false)}}><span className="brandmark"><GitBranch size={23}/></span>orchestra</a><button className="workspace-switch" onClick={()=>{P('repositories');D(null);setAdminOpen(false)}}><div className="workspace-avatar">{me.name[0].toUpperCase()}</div><span>{me.name}'s workspace<small>Private · {label(me.role)}</small></span><ChevronDown size={14}/></button><div className="nav-label">WORKSPACE</div><nav>{[{id:'overview',name:'Overview',icon:LayoutDashboard},{id:'repositories',name:'Repositories',icon:FolderGit2},{id:'changes',name:'Change requests',icon:GitPullRequest,count:open.length},{id:'work',name:'Agent work',icon:Sparkles,count:running.length},{id:'automations',name:'Automations',icon:Zap},{id:'previews',name:'Previews',icon:Box}].map(n=><button key={n.id} className={page===n.id&&!detail&&!adminOpen?'active':''} onClick={()=>{P(n.id);D(null);setAdminOpen(false)}}><n.icon size={18}/>{n.name}{!!n.count&&<span className="nav-count">{n.count}</span>}</button>)}{isAdmin&&<button className={adminOpen?'active':''} onClick={()=>setAdminOpen(o=>!o)} aria-label="Admin AI"><MessageSquare size={18}/>Admin AI{adminPending>0&&<span className="nav-count">{adminPending}</span>}</button>}</nav><div className="nav-label project-label">PROJECTS{isAdmin&&<button className="icon-button" title="New project" onClick={newProject}><Plus size={14}/></button>}</div><div className="project-list"><button className={project==='all'?'selected':''} onClick={()=>PR('all')}><span className="project-dot all"/>All projects</button>{state.projects.map((p:Item,i:number)=><div key={p.id} className="project-item"><button className={project===p.id?'selected':''} onClick={()=>PR(p.id)}><span className={`project-dot c${i%4}`}/>{p.name}</button>{isAdmin&&<button className="icon-button project-settings-btn" title={`Project settings: ${p.name}`} onClick={e=>{e.stopPropagation();manageProject(p)}}><Settings2 size={13}/></button>}</div>)}{!state.projects.length&&<p className="sidebar-note">Your next idea starts here.</p>}</div><div className="sidebar-bottom"><div className="system-note"><span className="pulse-dot"/><span>Local engine online<small>Powered by Pi</small></span><button className="icon-button" title={isAdmin?'Restart service & reload':'Reload dashboard'} onClick={triggerReload} disabled={reloading}><RotateCw size={14} className={reloading?'spin':''}/></button></div><nav><button className={page==='settings'?'active':''} onClick={()=>{P('settings');D(null);setAdminOpen(false)}}><Settings2 size={18}/>Settings & connections</button></nav><div className="profile"><span className="avatar">{me.name[0].toUpperCase()}</span><span>{me.name}<small>{label(me.role)}</small></span><button className="icon-button" aria-label="Toggle theme" onClick={()=>TH(theme==='light'?'dark':'light')}>{theme==='light'?<Moon size={17}/>:<Sun size={17}/>}</button></div></div></aside>
+ <div className="main"><header className="topbar"><div className="breadcrumb"><span>Workspace</span><ChevronRight size={13}/><strong>{detail?label(detail.type):label(page)}</strong>{project!=='all'&&(()=>{const curP=state.projects.find((p:Item)=>p.id===project);return curP?<><ChevronRight size={13}/>{isAdmin?<button className="breadcrumb-project-btn" title={`Project settings: ${curP.name}`} onClick={()=>manageProject(curP)}><span>{curP.name}</span><Settings2 size={12}/></button>:<span>{curP.name}</span>}</>:null;})()}</div><button className="search-trigger" onClick={()=>MD(<SearchModal state={state} close={close} select={(type,id)=>{if(type==='job')openJob(id);else openChange(id);close()}}/>)}><Search size={15}/><span>Jump to anything</span><kbd>⌘ K</kbd></button><div className="topbar-actions"><button className="reload-btn" title={isAdmin?'Rebuild, restart service, and reload dashboard':'Reload dashboard'} onClick={triggerReload} disabled={reloading}><RotateCw size={14} className={reloading?'spin':''}/><span>{reloading?'Reloading…':'Reload'}</span></button><span className="local-label"><span/>Local workspace</span></div></header>
  <main>{detail?<Detail type={detail.type} id={detail.id} state={state} me={me} back={goBack} newJob={newJob} refresh={refresh} notify={notify} run={run} triggerReload={triggerReload} reloading={reloading} openChange={openChange}/>:<>
  {page==='overview'&&<><div className="page-heading"><div><div className="eyebrow">YOUR ENGINEERING WORKSPACE</div><h1>A little less busywork.<br/><span>A lot more building.</span></h1><p>Your repositories, agents, and next steps. All in one place.</p></div>{canEdit&&<button className="primary" onClick={()=>newJob()}><Plus size={16}/>New task</button>}</div><div className="metrics">{[{name:'Open changes',n:open.length,icon:GitPullRequest,note:open.length?'Ready for your attention':'A clean slate',page:'changes'},{name:'Agents at work',n:running.length,icon:Sparkles,note:running.length?'Moving things forward':'Ready when you are',page:'work'},{name:'Needs attention',n:attention.length,icon:MessageSquare,note:attention.length?'Your input makes the difference':'Nothing blocking your flow',page:'work'},{name:'Active automations',n:workflows.filter((w:Item)=>w.enabled).length,icon:Zap,note:'The work behind the work',page:'automations'}].map(m=><button key={m.name} className="metric" onClick={()=>P(m.page)}><span className="metric-label">{m.name}<m.icon size={17}/></span><strong>{m.n.toString().padStart(2,'0')}</strong><small>{m.note}</small></button>)}</div>
  {!state.repos.length&&<div className="welcome-card"><div><span className="pill"><Sparkles size={13}/>LET'S GET YOU SET UP</span><h2>Your next collaborator is ready.</h2><p>Bring a repository, connect your favorite model,<br/>and give your first agent something worth doing.</p><button className="primary" onClick={()=>newRepo()}>Connect a repository<ArrowRight size={16}/></button></div><div className="orbit-art" aria-hidden="true"><div className="orbit o1"/><div className="orbit o2"/><div className="art-center"><GitBranch size={38}/></div><span className="art-node n1"><Code2 size={20}/></span><span className="art-node n2"><Sparkles size={20}/></span><span className="art-node n3"><Check size={20}/></span><span className="art-node n4"><GitPullRequest size={20}/></span></div></div>}
  <div className="overview-grid"><section className="panel"><div className="panel-title"><h2><Sparkles size={18}/>In motion</h2><button className="text-button" onClick={()=>P('work')}>All work<ArrowRight size={14}/></button></div>{jobs.length?<div>{[...jobs].sort((a,b)=>b.created.localeCompare(a.created)).slice(0,5).map(j=><JobRow key={j.id} job={j} repo={findRepo(j.repoId)} onClick={()=>openJob(j.id)}/>)}</div>:<Empty icon={Sparkles} title="Space to do your best work" description="Start a task and follow your agent's progress here." action={<button className="text-button" onClick={()=>newJob()}>Create your first task <ArrowRight size={14}/></button>}/>}</section><section className="panel"><div className="panel-title"><h2><Zap size={18}/>On autopilot</h2><span className="subtle">WORKFLOWS</span></div>{workflows.length?workflows.slice(0,4).map((w:Item)=><div className="workflow-mini" key={w.id}><span className="soft-icon"><Zap size={17}/></span><div><strong>{w.name}</strong><small>{label(w.trigger)}</small></div><span className={`dot ${w.enabled?'green':''}`}/></div>):<div className="automation-starter"><span className="soft-icon"><Zap size={22}/></span><h3>Make the routine automatic.</h3><p>Reviews when changes land.<br/>Fixes when tests fail. You set the rules.</p><button className="secondary" onClick={newWorkflow}>Create a workflow<Plus size={14}/></button></div>}<div className="panel-foot"><Shield size={14}/>Your guardrails. Your final say.</div></section></div><div className="bottom-note"><GitBranch size={14}/>Built for the way you ship.<span>Local Git · Isolated worktrees · Pi agents</span></div></>}
- {page==='repositories'&&<><PageHeading eyebrow="PROJECTS & CODE" title="A place for every idea." description="Connect repositories. Keep the whole picture in view." action={isAdmin&&<button className="primary" onClick={()=>newRepo()}><Plus size={16}/>Add repository</button>}/><div className="repo-grid">{repos.map((r:Item)=><section className="repo-card" key={r.id}><div className="repo-card-top"><span className="repo-icon"><FolderGit2 size={24}/></span><Status value={r.status}/></div><h2>{r.name}</h2><p>{state.projects.find((p:Item)=>p.id===r.projectId)?.name}</p><div className="repo-branch"><GitBranch size={14}/>{r.base||'Importing…'}<span>{state.changes.filter((c:Item)=>c.repoId===r.id&&c.status==='open').length} open changes</span></div><div className="repo-details"><span><Sparkles size={14}/>{r.model||'No model selected'}</span><span><Shield size={14}/>{modes.find(m=>m.value===r.autonomy)?.label}</span></div>{r.error&&<p className="error">{r.error}</p>}<footer><button className="text-button" onClick={()=>newJob(r.id)}>Start work<ArrowRight size={14}/></button>{isAdmin&&<button className="icon-button" title="Repository settings" onClick={()=>configureRepo(r)}><Settings2 size={17}/></button>}</footer></section>)}{isAdmin&&<button className="add-repo-card" onClick={()=>newRepo()}><Plus size={24}/><strong>Connect a repository</strong><span>Local path or remote Git URL</span></button>}</div></>}
+ {page==='repositories'&&<><PageHeading eyebrow="PROJECTS & CODE" title="A place for every idea." description="Connect repositories. Keep the whole picture in view." action={isAdmin&&<button className="primary" onClick={()=>newRepo()}><Plus size={16}/>Add repository</button>}/>{project!=='all'&&(()=>{const curP=state.projects.find((p:Item)=>p.id===project);if(!curP)return null;return <div className="project-banner"><div className="project-banner-info"><strong>{curP.name}</strong>{curP.description?<small>{curP.description}</small>:<small style={{color:'var(--muted)'}}>No description</small>}</div>{isAdmin&&<button className="secondary" onClick={()=>manageProject(curP)}><Settings2 size={14}/>Project settings</button>}</div>;})()}<div className="repo-grid">{repos.map((r:Item)=><section className="repo-card" key={r.id}><div className="repo-card-top"><span className="repo-icon"><FolderGit2 size={24}/></span><Status value={r.status}/></div><h2>{r.name}</h2><p>{state.projects.find((p:Item)=>p.id===r.projectId)?.name}</p><div className="repo-branch"><GitBranch size={14}/>{r.base||'Importing…'}<span>{state.changes.filter((c:Item)=>c.repoId===r.id&&c.status==='open').length} open changes</span></div><div className="repo-details"><span><Sparkles size={14}/>{r.model||'No model selected'}</span><span><Shield size={14}/>{modes.find(m=>m.value===r.autonomy)?.label}</span></div>{r.error&&<p className="error">{r.error}</p>}<footer><button className="text-button" onClick={()=>newJob(r.id)}>Start work<ArrowRight size={14}/></button>{isAdmin&&<button className="icon-button" title="Repository settings" onClick={()=>configureRepo(r)}><Settings2 size={17}/></button>}</footer></section>)}{isAdmin&&<button className="add-repo-card" onClick={()=>newRepo()}><Plus size={24}/><strong>Connect a repository</strong><span>Local path or remote Git URL</span></button>}</div></>}
  {page==='work'&&<><PageHeading eyebrow="YOUR AI TEAM" title="Good work, in progress." description="Every task has a conversation. Every result has evidence." action={canEdit&&<button className="primary" onClick={()=>newJob()}><Plus size={16}/>New task</button>}/><Filter value={query} change={Q} placeholder="Find a task…"/><section className="panel">{jobs.length?jobs.filter((j:Item)=>j.title.toLowerCase().includes(query.toLowerCase())).sort((a:Item,b:Item)=>b.created.localeCompare(a.created)).map((j:Item)=><JobRow key={j.id} job={j} repo={findRepo(j.repoId)} onClick={()=>openJob(j.id)}/>):<Empty icon={Sparkles} title="Your agents are ready" description="Start with a plan, a code review, a failing test, or an improvement." action={<button className="primary" onClick={()=>newJob()}>Start a task<ArrowRight size={15}/></button>}/>}</section></>}
  {page==='changes'&&<><PageHeading eyebrow="REVIEW & SHIP" title="Small changes. Real progress." description="Local change requests, with everything you need to make the call." action={canEdit&&repoOptions.length>0&&<button className="primary" onClick={createCR}><Plus size={16}/>New change request</button>}/><Filter value={query} change={Q} placeholder="Find a change request…"/><section className="panel">{changes.length?changes.filter((c:Item)=>c.title.toLowerCase().includes(query.toLowerCase())).map((c:Item)=><button className="list-row" key={c.id} onClick={()=>openChange(c.id)}><span className={`row-icon ${c.status==='merged'?'purple':c.status==='closed'?'':'green'}`}><GitPullRequest size={20}/></span><div className="row-main"><strong>{c.title}</strong><small>{findRepo(c.repoId)?.name} <span>·</span> {c.source} → {c.target}</small></div>{c.conflict&&<span className="status failed">Conflicts</span>}<Status value={c.status}/><ChevronRight size={16}/></button>):<Empty icon={GitPullRequest} title="Nothing waiting in the wings" description="Agent changes appear here for review. You can also compare existing branches."/>}</section></>}
  {page==='automations'&&<><PageHeading eyebrow="LET THE ROUTINE RUN" title="Your workflow, on repeat." description="Event-driven agents and schedules that keep your projects moving." action={canEdit&&<button className="primary" onClick={newWorkflow}><Plus size={16}/>New workflow</button>}/><section className="panel">{workflows.length?workflows.map((w:Item)=><div className="list-row" key={w.id}><span className="row-icon purple"><Zap size={20}/></span><div className="row-main"><strong>{w.name}</strong><small>{findRepo(w.repoId)?.name} <span>·</span> {label(w.trigger)} → {label(w.kind)}{w.trigger==='schedule'&&` · Every ${w.intervalMinutes} min · Next ${new Date(w.nextRun).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}`}</small>{w.error&&<small className="error">{w.error}</small>}</div><Status value={w.enabled?'enabled':'paused'}/>{canEdit&&<button className="icon-button" title={w.enabled?'Pause':'Enable'} onClick={()=>run(()=>api(`/workflows/${w.id}`,'PATCH',{enabled:!w.enabled}))}>{w.enabled?<Pause size={17}/>:<Play size={17}/>}</button>}</div>):<Empty icon={Zap} title="Less checking. More creating." description="Set a trigger, give an agent instructions, and decide how much autonomy it gets." action={<button className="primary" onClick={newWorkflow}>Create a workflow<ArrowRight size={15}/></button>}/>}</section><div className="section-heading"><h2>Skills & instructions</h2>{canEdit&&<button className="secondary" onClick={addResource}><Plus size={15}/>New resource</button>}</div><p className="muted">Versioned knowledge that shapes how your agents work. Create improvements with an “Adapt” task, then activate the result here.</p><div className="repo-grid">{state.resources.filter((r:Item)=>project==='all'||r.projectId===project).map((r:Item)=><div className="repo-card" key={r.id}><div className="repo-card-top"><FileCode2 size={22}/><Status value={r.active?'active':'draft'}/></div><h3>{r.name}</h3><p>{label(r.kind)} · Version {r.version}</p><pre className="resource-preview">{r.content.slice(0,180)}</pre>{!r.active&&canEdit&&<button className="secondary" onClick={()=>run(()=>api(`/resources/${r.id}/activate`,'POST',{}))}>Activate this version</button>}</div>)}</div></>}

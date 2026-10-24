@@ -1,11 +1,37 @@
 import { spawn } from 'node:child_process';
-import { mkdir, realpath, rm } from 'node:fs/promises';
+import { mkdir, realpath, rm, writeFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { dataDir, get, put, all, admin, type Row } from './store.js';
+import { dataDir, get, put, all, del, admin, type Row } from './store.js';
 export async function command(exe:string,args:string[],cwd?:string,timeout=120000):Promise<string>{return new Promise((res,rej)=>{const p=spawn(exe,args,{cwd,env:{...process.env,GIT_TERMINAL_PROMPT:'0'},stdio:['ignore','pipe','pipe']});let out='',err='';const t=setTimeout(()=>{p.kill('SIGKILL');rej(Error(`${exe} timed out`));},timeout);p.stdout.on('data',b=>{out=(out+b).slice(-2000000);});p.stderr.on('data',b=>{err=(err+b).slice(-20000);});p.on('error',e=>{clearTimeout(t);rej(e)});p.on('close',code=>{clearTimeout(t);code===0?res(out.trim()):rej(Error(err||`${exe} exited ${code}`));});});}
 export const git=(cwd:string,...args:string[])=>command('git',['-c','core.hooksPath=/dev/null','-c','protocol.file.allow=always',...args],cwd);
 const locks=new Map<string,Promise<any>>();
 export async function locked<T>(id:string,fn:()=>Promise<T>):Promise<T>{const prev=locks.get(id)||Promise.resolve();const next=prev.catch(()=>{}).then(fn);locks.set(id,next);try{return await next;}finally{if(locks.get(id)===next)locks.delete(id);}}
+export async function createLocalRepository(destinationPath:string,name:string,defaultBranch='main'){
+ if(destinationPath.startsWith('-'))throw Error('Invalid repository location');
+ const target=resolve(destinationPath.replace(/^~(?=$|\/)/,process.env.HOME||''));
+ await mkdir(target,{recursive:true});
+ try{
+  await git(target,'rev-parse','--git-dir');
+ }catch{
+  await command('git',['init','-b',defaultBranch,target]);
+  await git(target,'config','user.name','Orchestra');
+  await git(target,'config','user.email','orchestra@localhost');
+ }
+ const readmePath=join(target,'README.md');
+ if(!existsSync(readmePath)){
+  await writeFile(readmePath,`# ${name}\n\nCreated with Orchestra.\n`,{flag:'wx'}).catch(()=>{});
+ }
+ const gitignorePath=join(target,'.gitignore');
+ if(!existsSync(gitignorePath)){
+  await writeFile(gitignorePath,"node_modules/\ndist/\n.DS_Store\n*.log\n.env\n",{flag:'wx'}).catch(()=>{});
+ }
+ try{
+  await git(target,'add','.');
+  await git(target,'commit','-m','Initial commit');
+ }catch{}
+ return target;
+}
 export async function importRepository(source:string,name:string,projectId:string,base?:string){
  if(source.startsWith('-'))throw Error('Invalid repository location');
  const isRemote=/^(https:\/\/|ssh:\/\/|git@)/.test(source);

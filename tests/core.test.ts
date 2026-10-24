@@ -100,3 +100,63 @@ test('cancelling Google API-key setup discards a new connection but preserves au
  assert.equal((await request('POST',`/api/connections/${saved.id}/cancel-login`,ownerToken,{discard:true})).statusCode,200);
  assert.equal(store.get('connections',saved.id)?.secret,saved.secret);
 });
+
+test('createLocal repository initializes local folder and imports successfully',async()=>{
+ const newLocalPath=join(dir,'brand-new-local');
+ const res=await request('POST','/api/repos',ownerToken,{
+  projectId:project.id,
+  name:'brand-new-local',
+  source:newLocalPath,
+  base:'main',
+  createLocal:true
+ });
+ assert.equal(res.statusCode,200,res.body);
+ const newRepo=res.json();
+ assert.equal(newRepo.name,'brand-new-local');
+ assert.equal(newRepo.status,'ready');
+ assert.equal(newRepo.base,'main');
+ assert.equal(await readFile(join(newLocalPath,'README.md'),'utf8'),'# brand-new-local\n\nCreated with Orchestra.\n');
+ assert.ok(await readFile(join(newLocalPath,'.gitignore'),'utf8'));
+ const auditLog=store.all('audit').find(a=>a.action==='repository.create'&&a.target===newRepo.id);
+ assert.ok(auditLog);
+});
+
+test('project management: patch details, reject delete when non-empty, and delete when empty',async()=>{
+ const pRes=await request('POST','/api/projects',ownerToken,{name:'Manageable',description:'Initial'});
+ assert.equal(pRes.statusCode,200);
+ const p=pRes.json();
+ 
+ const patchRes=await request('PATCH',`/api/projects/${p.id}`,ownerToken,{name:'Renamed',description:'Updated desc'});
+ assert.equal(patchRes.statusCode,200);
+ assert.equal(patchRes.json().name,'Renamed');
+ assert.equal(patchRes.json().description,'Updated desc');
+ 
+ const emptyLocalPath=join(dir,'proj-repo');
+ const repoRes=await request('POST','/api/repos',ownerToken,{
+  projectId:p.id,
+  name:'proj-repo',
+  source:emptyLocalPath,
+  createLocal:true
+ });
+ assert.equal(repoRes.statusCode,200);
+ const projRepo=repoRes.json();
+ 
+ const rejectDel=await request('DELETE',`/api/projects/${p.id}`,ownerToken);
+ assert.equal(rejectDel.statusCode,400);
+ assert.match(rejectDel.json().error,/Cannot delete project/);
+ 
+ const delRepo=await request('DELETE',`/api/repos/${projRepo.id}`,ownerToken);
+ assert.equal(delRepo.statusCode,200);
+ assert.equal(store.get('repos',projRepo.id),undefined);
+ assert.ok(await readFile(join(emptyLocalPath,'README.md'),'utf8'));
+ 
+ const delProj=await request('DELETE',`/api/projects/${p.id}`,ownerToken);
+ assert.equal(delProj.statusCode,200);
+ assert.equal(store.get('projects',p.id),undefined);
+ 
+ const selfRepo=store.put('repos',{name:'self',self:true,projectId:project.id});
+ const delSelf=await request('DELETE',`/api/repos/${selfRepo.id}`,ownerToken);
+ assert.equal(delSelf.statusCode,400);
+ assert.match(delSelf.json().error,/self-repository/);
+ store.del('repos',selfRepo.id);
+});

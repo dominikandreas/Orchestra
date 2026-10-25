@@ -74,8 +74,114 @@ export async function importRepository(source:string,name:string,projectId:strin
  }
 }
 export async function branches(repo:Row){return (await git(repo.path,'for-each-ref','--format=%(refname:short)','refs/heads')).split('\n').filter(Boolean);}
+export async function branchDetails(repo:Row){
+ if(!repo.path||!existsSync(repo.path))return [];
+ try{
+  const lines=(await git(repo.path,'for-each-ref','--format=%(refname:short)%00%(objectname)%00%(committerdate:iso-strict)%00%(subject)%00%(authorname)','refs/heads')).split('\n').filter(Boolean);
+  return lines.map(line=>{
+   const [name='',sha='',date='',subject='',author='']=line.split('\0');
+   return {name,sha,date,subject,author,isBase:name===repo.base};
+  });
+ }catch{
+  return [];
+ }
+}
+export async function createBranch(repo:Row,name:string,from?:string){
+ if(!repo.path||!existsSync(repo.path))throw Error('Repository not found');
+ const cleanName=name.trim();
+ if(!cleanName||cleanName.startsWith('-')||cleanName.includes('..'))throw Error('Invalid branch name');
+ const base=from||repo.base||'main';
+ await git(repo.path,'branch',cleanName,base);
+ emitBranchUpdated(repo.id,cleanName);
+ return {ok:true,name:cleanName};
+}
+export async function deleteBranch(repo:Row,name:string){
+ if(!repo.path||!existsSync(repo.path))throw Error('Repository not found');
+ if(name===repo.base)throw Error('Cannot delete base branch');
+ await git(repo.path,'branch','-D',name);
+ emitBranchUpdated(repo.id,name);
+ return {ok:true,name};
+}
+export async function repoTree(repo:Row,ref?:string,path='',recursive=false){
+ if(!repo.path||!existsSync(repo.path))return {ref:ref||repo.base||'main',path,entries:[],files:[]};
+ const targetRef=ref&&ref.trim()?ref.trim():(repo.base||'main');
+ if(targetRef.startsWith('-')||targetRef.includes('..'))throw Error('Invalid ref');
+ const cleanPath=path?path.trim().replace(/^\/+/,'').replace(/\/+$/,''):'';
+ if(cleanPath.startsWith('-')||cleanPath.includes('..'))throw Error('Invalid path');
+
+ if(recursive){
+  const out=await git(repo.path,'ls-tree','-r','--name-only',targetRef).catch(()=>'');
+  const files=out.split('\n').filter(Boolean);
+  return {ref:targetRef,path:cleanPath,files};
+ }
+
+ const targetArg=cleanPath?`${cleanPath}/`:'';
+ const args=['ls-tree','-l',targetRef];
+ if(targetArg)args.push(targetArg);
+ const out=await git(repo.path,...args).catch(()=>'');
+ const lines=out.split('\n').filter(Boolean);
+ const entries=lines.map(l=>{
+  const m=l.match(/^(\d+)\s+(\w+)\s+([0-9a-f]+)\s+(\S+)\t(.+)$/);
+  if(!m)return null;
+  const fullPath=m[5];
+  const name=fullPath.split('/').pop()||fullPath;
+  return {
+   mode:m[1],
+   type:m[2] as 'blob'|'tree',
+   sha:m[3],
+   size:m[4]==='-'?null:parseInt(m[4],10),
+   path:fullPath,
+   name
+  };
+ }).filter(Boolean);
+ entries.sort((a,b)=>{
+  if(a!.type!==b!.type)return a!.type==='tree'?-1:1;
+  return a!.name.localeCompare(b!.name);
+ });
+ return {ref:targetRef,path:cleanPath,entries};
+}
+export async function repoBlob(repo:Row,ref?:string,path=''){
+ if(!repo.path||!existsSync(repo.path))throw Error('Repository not found');
+ const targetRef=ref&&ref.trim()?ref.trim():(repo.base||'main');
+ if(targetRef.startsWith('-')||targetRef.includes('..'))throw Error('Invalid ref');
+ const cleanPath=path?path.trim().replace(/^\/+/,''):'';
+ if(!cleanPath||cleanPath.startsWith('-')||cleanPath.includes('..'))throw Error('Invalid path');
+
+ const sizeStr=await git(repo.path,'cat-file','-s',`${targetRef}:${cleanPath}`).catch(()=>'0');
+ const size=parseInt(sizeStr.trim(),10)||0;
+ if(size>2*1024*1024){
+  return {ref:targetRef,path:cleanPath,size,isBinary:false,isTooLarge:true,content:''};
+ }
+ const content=await git(repo.path,'show',`${targetRef}:${cleanPath}`).catch(e=>{
+  throw Error(`Could not read file: ${e instanceof Error?e.message:String(e)}`);
+ });
+ const isBinary=content.slice(0,4000).includes('\0');
+ return {ref:targetRef,path:cleanPath,size,isBinary,isTooLarge:false,content:isBinary?'':content};
+}
+export async function repoCommits(repo:Row,ref?:string,limit=30){
+ if(!repo.path||!existsSync(repo.path))return [];
+ const targetRef=ref&&ref.trim()?ref.trim():(repo.base||'main');
+ if(targetRef.startsWith('-')||targetRef.includes('..'))throw Error('Invalid ref');
+ const cleanLimit=Math.min(100,Math.max(1,limit));
+ const out=await git(repo.path,'log',`-n${cleanLimit}`,'--format=%H%x00%an%x00%ae%x00%aI%x00%s',targetRef).catch(()=>'');
+ const lines=out.split('\n').filter(Boolean);
+ return lines.map(line=>{
+  const [sha='',author='',email='',date='',message='']=line.split('\0');
+  return {sha,author,email,date,message};
+ });
+}
 export async function revision(repo:Row,branch:string){if(branch.startsWith('-')||branch.includes('..'))throw Error('Invalid branch');return git(repo.path,'rev-parse','--verify',`refs/heads/${branch}^{commit}`);}
-export async function createWorktree(repo:Row,id:string,base:string){const path=join(dataDir,'worktrees',id);await mkdir(join(dataDir,'worktrees'),{recursive:true});await git(repo.path,'worktree','add','-b',`relay/${id}`,path,base);return path;}
+export async function createWorktree(repo:Row,id:string,base:string){
+ const path=join(dataDir,'worktrees',id);
+ if(existsSync(path)){
+  await rm(path,{recursive:true,force:true}).catch(()=>{});
+  await git(repo.path,'worktree','prune').catch(()=>{});
+  await git(repo.path,'branch','-D',`relay/${id}`).catch(()=>{});
+ }
+ await mkdir(join(dataDir,'worktrees'),{recursive:true});
+ await git(repo.path,'worktree','add','-b',`relay/${id}`,path,base);
+ return path;
+}
 export async function createChange(repo:Row,source:string,target:string,title:string,authorId:string){if(source===target)throw Error('Choose different source and target branches');return put('changes',{repoId:repo.id,projectId:repo.projectId,title,source,target,sourceSha:await revision(repo,source),targetSha:await revision(repo,target),status:'open',authorId});}
 export async function diffChange(c:Row){const r=get('repos',c.repoId)!;return git(r.path,'diff','--no-ext-diff',`${c.targetSha}...${c.sourceSha}`);}
 export async function refreshChange(c:Row){const r=get('repos',c.repoId)!;const sourceSha=await revision(r,c.source),targetSha=await revision(r,c.target);let conflict=false;try{await git(r.path,'merge-tree','--write-tree',targetSha,sourceSha)}catch{conflict=true}return put('changes',{...c,sourceSha,targetSha,conflict});}

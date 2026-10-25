@@ -23,7 +23,7 @@ after(async()=>{
 });
 
 test('SPA catch-all serves index.html for UI routes and 404 for missing API routes',async()=>{
- for(const path of ['/','/overview','/repositories','/changes','/changes/cr-123','/work','/jobs/job-456','/automations','/deployments','/previews','/settings']){
+ for(const path of ['/','/overview','/repositories','/changes','/changes/cr-123','/work','/jobs/job-456','/automations','/deployments','/previews','/settings','/assistant','/assistant/thread-123']){
   const res=await app.inject({method:'GET',url:path});
   assert.equal(res.statusCode,200,`Failed for path: ${path}`);
   assert.ok(res.headers['content-type']?.includes('text/html'),`Expected HTML header for ${path}`);
@@ -92,4 +92,18 @@ test('route parsing and URL serialization contract',async()=>{
 
  // Invalid route falls back to overview
  assert.deepEqual(parseRoute('/non-existent',''),{page:'overview',detail:null,project:'all'});
+
+ // Also verify shared routes.ts helper contract
+ const routes=await import('../src/web/routes.js');
+ assert.deepEqual(routes.parseRoute('/',''),{page:'home',id:null,project:'all',query:{}});
+ assert.deepEqual(routes.parseRoute('/overview',''),{page:'home',id:null,project:'all',query:{}});
+ assert.deepEqual(routes.parseRoute('/sessions/job-1','?project=p1'),{page:'sessions',id:'job-1',project:'p1',query:{}});
+ assert.deepEqual(routes.parseRoute('/jobs/job-1',''),{page:'sessions',id:'job-1',project:'all',query:{}});
+ assert.deepEqual(routes.parseRoute('/work/job-1',''),{page:'sessions',id:'job-1',project:'all',query:{}});
+ assert.deepEqual(routes.parseRoute('/changes/cr-1',''),{page:'changes',id:'cr-1',project:'all',query:{}});
+ assert.deepEqual(routes.parseRoute('/agents',''),{page:'agents',id:null,project:'all',query:{}});
+ assert.deepEqual(routes.parseRoute('/assistant/t-1',''),{page:'assistant',id:'t-1',project:'all',query:{}});
+ assert.deepEqual(routes.parseRoute('/repositories/repo-1',''),{page:'repositories',id:'repo-1',project:'all',query:{}});
+ assert.equal(routes.buildUrl('sessions','job-1','p1'),'/sessions/job-1?project=p1');
+ assert.equal(routes.buildUrl('repositories','repo-1','p1'),'/repositories/repo-1?project=p1');
 });

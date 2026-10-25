@@ -1,9 +1,16 @@
 import http from 'node:http';
 import https from 'node:https';
 import { readFileSync, existsSync } from 'node:fs';
+import { rm } from 'node:fs/promises';
 import httpProxy from 'http-proxy';
 import { all, get, put, del, token, hash, type Row } from './store.js';
 import { command, createWorktree, revision, locked, branches, git, onBranchUpdated } from './git.js';
+
+export type DeploymentOptions = {
+  branch?: string;
+  lifetimeMinutes?: number;
+  customName?: string;
+};
 
 function putDeployment(record: { id: string } & Partial<Row>) {
   if (get('deployments', record.id)) {
@@ -15,8 +22,25 @@ function putDeployment(record: { id: string } & Partial<Row>) {
   return put('deployments', record);
 }
 
-export async function startDeployment(repo: Row, job: Row | undefined, userId: string, branch?: string) {
+export async function startDeployment(
+  repo: Row,
+  job: Row | undefined,
+  userId: string,
+  branchOrOpts?: string | DeploymentOptions
+) {
   if (!repo.previewCommand) throw Error('Set a deployment/preview command in repository settings first.');
+  let branch: string | undefined;
+  let lifetimeMinutes = 30;
+  let customName: string | undefined;
+
+  if (typeof branchOrOpts === 'string') {
+    branch = branchOrOpts;
+  } else if (branchOrOpts) {
+    branch = branchOrOpts.branch;
+    if (branchOrOpts.lifetimeMinutes !== undefined) lifetimeMinutes = branchOrOpts.lifetimeMinutes;
+    customName = branchOrOpts.customName;
+  }
+
   let targetBranch = branch || (job?.sourceBranch && job.sourceBranch !== 'auto' ? job.sourceBranch : undefined) || repo.base || 'main';
   let targetSha: string | undefined;
   try {
@@ -38,6 +62,8 @@ export async function startDeployment(repo: Row, job: Row | undefined, userId: s
     sha: targetSha,
     userId,
     status: 'starting',
+    lifetimeMinutes,
+    customName,
     lastUsed: Date.now()
   });
   const name = `relay-deploy-${p.id}`;
@@ -189,7 +215,77 @@ export async function restartDeployment(id: string) {
   const repo = get('repos', p.repoId);
   if (!repo) throw Error('Repository not found');
   if (p.name) await command('docker', ['rm', '-f', p.name]).catch(() => {});
-  return startDeployment(repo, p.jobId ? get('jobs', p.jobId) : undefined, p.userId, p.branch);
+  return startDeployment(repo, p.jobId ? get('jobs', p.jobId) : undefined, p.userId, {
+    branch: p.branch,
+    lifetimeMinutes: p.lifetimeMinutes,
+    customName: p.customName
+  });
+}
+
+export async function configureDeployment(id: string, config: { branch?: string; lifetimeMinutes?: number; customName?: string }) {
+  const d = get('deployments', id) || get('previews', id);
+  if (!d) throw Error('Deployment not found');
+  const repo = get('repos', d.repoId);
+  if (!repo) throw Error('Repository not found');
+
+  const patch: { id: string } & Record<string, any> = { id: d.id };
+  if (config.lifetimeMinutes !== undefined) {
+    patch.lifetimeMinutes = config.lifetimeMinutes;
+  }
+  if (config.customName !== undefined) {
+    patch.customName = config.customName.trim() || null;
+  }
+
+  let branchChanged = false;
+  if (config.branch && config.branch !== d.branch) {
+    const targetSha = await revision(repo, config.branch).catch(() => undefined);
+    if (!targetSha) throw Error(`Branch "${config.branch}" not found in repository`);
+    patch.branch = config.branch;
+    patch.sha = targetSha;
+    branchChanged = true;
+  }
+
+  putDeployment(patch);
+
+  if (branchChanged && d.status === 'running') {
+    void updateDeployment(d.id, patch.sha).catch(() => {});
+  }
+
+  return get('deployments', id) || get('previews', id);
+}
+
+export async function removeDeployment(id: string) {
+  const p = get('deployments', id) || get('previews', id);
+  if (!p) return { ok: true };
+  if (p.name) {
+    await command('docker', ['rm', '-f', p.name]).catch(() => {});
+  }
+  const repo = get('repos', p.repoId);
+  if (repo && p.path && existsSync(p.path)) {
+    await rm(p.path, { recursive: true, force: true }).catch(() => {});
+    await git(repo.path, 'worktree', 'prune').catch(() => {});
+    await git(repo.path, 'branch', '-D', `relay/deploy-${p.id}`).catch(() => {});
+  }
+  del('deployments', id);
+  del('previews', id);
+  for (const g of all('previewGrants').filter(g => g.deploymentId === id || g.previewId === id)) {
+    del('previewGrants', g.id);
+  }
+  return { ok: true, id };
+}
+
+export async function cleanupStoppedDeployments(projectId?: string) {
+  const allList = all('deployments').concat(all('previews'));
+  const target = allList.filter(d =>
+    (!projectId || projectId === 'all' || d.projectId === projectId) &&
+    ['stopped', 'failed'].includes(d.status)
+  );
+  let count = 0;
+  for (const d of target) {
+    await removeDeployment(d.id).catch(() => {});
+    count++;
+  }
+  return { ok: true, count, removed: count };
 }
 
 export function deploymentLink(p: Row, userId: string, baseUrlOrHost: string, prefix = 'deployment') {
@@ -563,8 +659,13 @@ export function serveDeployments(host: string) {
   server.listen(Number(process.env.RELAY_PREVIEW_PORT || 4311), host);
 
   setInterval(() => {
-    for (const p of all('deployments').concat(all('previews')).filter(p => p.status === 'running' && p.lastUsed < Date.now() - 30 * 60000)) {
-      void stopDeployment(p.id);
+    for (const p of all('deployments').concat(all('previews'))) {
+      if (p.status !== 'running') continue;
+      const timeout = p.lifetimeMinutes !== undefined ? p.lifetimeMinutes : 30;
+      // timeout <= 0 means infinite lifetime / never auto-stop
+      if (timeout > 0 && p.lastUsed < Date.now() - timeout * 60000) {
+        void stopDeployment(p.id);
+      }
     }
   }, 60000).unref();
 

@@ -26,3 +26,30 @@ test('self-adaptation starts ordinary visible software work',async()=>{const t=a
 test('restart interrupts admin work and does not replay approved host operations',()=>{const a=s.put('adminActions',{status:'running'});const r=s.put('adminRuns',{status:'running'});agent.recoverAdminRuns();assert.equal(s.get('adminActions',a.id)?.status,'interrupted');assert.equal(s.get('adminRuns',r.id)?.status,'interrupted');});
 test('admin approval executes merge action with admin authorization',async()=>{const git=await import('../src/server/git.js');const rootSource=join(root,'admin-repo-source');await git.command('git',['init','-b','main',rootSource]);await git.git(rootSource,'config','user.name','Tests');await git.git(rootSource,'config','user.email','tests@example.com');await (await import('node:fs/promises')).writeFile(join(rootSource,'hello.txt'),'hi\n');await git.git(rootSource,'add','.');await git.git(rootSource,'commit','-m','init');const r=await git.importRepository(rootSource,'Admin Merge Repo',repo.projectId);const wt=await git.createWorktree(r,'admin-merge',r.base);await (await import('node:fs/promises')).writeFile(join(wt,'merge-target.txt'),'merge\n');await git.git(wt,'add','.');await git.git(wt,'commit','-m','feature commit');const c=await git.createChange(r,'relay/admin-merge','main','Admin merge feature',owner.id);const a=control.proposeAction(owner.id,'Admin requested merge',{kind:'merge',changeId:c.id,sourceSha:c.sourceSha,targetSha:c.targetSha});assert.equal(a.status,'awaiting_approval');await control.decideAction(a.id,'approve',owner.id);await control.waitForAdminActions();assert.equal(s.get('adminActions',a.id)?.status,'completed',s.get('adminActions',a.id)?.error);assert.equal(s.get('changes',c.id)?.status,'merged');});
 test('admin agent message accepts and persists thinking effort and forwards it to start_job',async()=>{const thread=agent.createAdminThread(owner.id);const invalid=await request('POST',`/api/admin/threads/${thread.id}/messages`,ownerToken,{message:'Test thinking',connectionId:connection.id,model:'fixture',thinkingLevel:'invalid_level'});assert.equal(invalid.statusCode,400);const run=agent.startAdminTurn(thread.id,owner.id,{message:'orchestrate fixture with thinking',connectionId:connection.id,model:'fixture',thinkingLevel:'high'});assert.equal(s.get('adminRuns',run.id)?.thinkingLevel,'high');assert.equal(s.get('adminThreads',thread.id)?.thinkingLevel,'high');const tools=agent.adminTools(run,{connectionId:connection.id,model:'fixture',thinkingLevel:'high'});const startJob=tools.find(t=>t.name==='start_job')!;assert.ok(startJob);const res=await startJob.execute('call_start_job',{repoId:repo.id,title:'Thinking job',prompt:'Solve with high effort',kind:'implement'});const parsedRes=JSON.parse(res.content[0].text);const createdJob=s.get('jobs',parsedRes.id)!;assert.equal(createdJob.thinkingLevel,'high');const customRes=await startJob.execute('call_start_job_2',{repoId:repo.id,title:'Custom thinking job',prompt:'Solve with minimal effort',kind:'implement',thinkingLevel:'minimal'});const parsedCustom=JSON.parse(customRes.content[0].text);const customJob=s.get('jobs',parsedCustom.id)!;assert.equal(customJob.thinkingLevel,'minimal');});
+
+test('adminSnapshot orders past threads by date descending and supports deleting threads/actions',async()=>{
+ const t1=s.put('adminThreads',{authorId:owner.id,title:'Older thread',created:'2026-01-01T00:00:00.000Z',updated:'2026-01-01T00:00:00.000Z'});
+ const t2=s.put('adminThreads',{authorId:owner.id,title:'Newer thread',created:'2026-01-02T00:00:00.000Z',updated:'2026-01-02T00:00:00.000Z'});
+ const snap=agent.adminSnapshot(owner.id);
+ const idx1=snap.threads.findIndex((t:any)=>t.id===t1.id);
+ const idx2=snap.threads.findIndex((t:any)=>t.id===t2.id);
+ assert.ok(idx2<idx1,'Newer thread should appear before older thread');
+
+ const delRes=await request('DELETE',`/api/admin/threads/${t1.id}`,ownerToken);
+ assert.equal(delRes.statusCode,200);
+ assert.equal(s.get('adminThreads',t1.id),undefined);
+
+ const action=s.put('adminActions',{authorId:owner.id,status:'failed',reason:'Test'});
+ const delAct=await request('DELETE',`/api/admin/actions/${action.id}`,ownerToken);
+ assert.equal(delAct.statusCode,200);
+ assert.equal(s.get('adminActions',action.id),undefined);
+});
+
+test('revoked author action can still be rejected by an active administrator',async()=>{
+ const other=s.put('users',{role:'admin',name:'Revoked2'});
+ const c=control.proposeAction(other.id,'Revoked proposal',{kind:'host',command:'exit 8',cwd:root});
+ s.put('users',{id:other.id,disabled:true});
+ // Rejecting should succeed even though proposer was disabled
+ const res=await control.decideAction(c.id,'reject',owner.id);
+ assert.equal(res.status,'rejected');
+});

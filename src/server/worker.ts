@@ -1,4 +1,6 @@
 import { createAgentSession,createExtensionRuntime,SessionManager,SettingsManager,DefaultResourceLoader,createBashToolDefinition,type ResourceLoader } from '@earendil-works/pi-coding-agent';
+import { connectionContract } from './external-contract.js';
+import { saveConnectionDraft,requireExternalAdmin } from './external.js';
 import { join } from 'node:path';
 import { Type } from 'typebox';
 import { mkdir } from 'node:fs/promises';
@@ -12,7 +14,7 @@ process.on('disconnect',()=>{void stopSandbox(container).finally(()=>process.exi
 const send=(type:string,data:any)=>process.send?.({type,data});
 process.on('message',async(m:any)=>{try{if(m.type==='cancel'){await session?.abort();await stopSandbox(container);process.exit(0);}else if(m.type==='update_settings'){if(m.thinkingLevel&&session?.setThinkingLevel)session.setThinkingLevel(m.thinkingLevel);}else if(m.type==='steer')await session?.steer(m.text,m.images);else if(m.type==='followup')await session?.followUp(m.text,m.images);}catch(e){send('notice',String(e))}});
 try {
- await startSandbox(container,job.path,repo.image,job.kind==='review');send('notice','Isolated workspace ready');
+ await startSandbox(container,job.path,repo.image,job.kind==='review'||!!job.deploymentId);send('notice','Isolated workspace ready');
  const mr=await runtime(job.connectionId);
  let model=mr.getModel(job.provider,job.model);
  if(!model&&job.model){
@@ -25,8 +27,9 @@ try {
   }
  }
  if(!model)throw Error('Selected model is not available. Choose a model in repository settings.');
- const resources=all('resources').filter(x=>x.projectId===repo.projectId&&x.active);
- const prompt=`You are Orchestra, an autonomous software engineering collaborator. Work only in /workspace using the workspace tool. Describe evidence, remaining issues and tests honestly. You cannot merge, change app permissions, or activate extensions. Do not modify .git. ${job.kind==='review'?'Review without edits. Report findings with file paths, lines, severity and rationale.':'Implement the requested work carefully and run relevant tests.'}\n${resources.filter(x=>x.kind!=='extension').map(x=>x.content).join('\n\n')}`;
+ const resources=job.deploymentId?[]:all('resources').filter(x=>x.projectId===repo.projectId&&x.active);
+ const agent=job.agentId?get('agents',job.agentId):undefined;
+ const prompt=`You are Orchestra, an autonomous software engineering collaborator. Work only in /workspace using the workspace tool. Describe evidence, remaining issues and tests honestly. You cannot merge, change app permissions, or activate extensions. Do not modify .git. ${job.kind==='review'?'Review without edits. Report findings with file paths, lines, severity and rationale.':'Implement the requested work carefully and run relevant tests.'}\n${job.deploymentId?connectionContract:''}\n${resources.filter(x=>x.kind!=='extension').map(x=>x.content).join('\n\n')}${agent?`\n\nAgent "${agent.name}" instructions:\n${agent.instructions}`:''}`;
  let loader:ResourceLoader={getExtensions:()=>({extensions:[],errors:[],runtime:createExtensionRuntime()}),getSkills:()=>({skills:[],diagnostics:[]}),getPrompts:()=>({prompts:[],diagnostics:[]}),getThemes:()=>({themes:[],diagnostics:[]}),getAgentsFiles:()=>({agentsFiles:[]}),getSystemPrompt:()=>prompt,getSystemPromptSource:()=>undefined,getAppendSystemPrompt:()=>[],getAppendSystemPromptSources:()=>[],extendResources:()=>{},reload:async()=>{}};
  const ext=resources.filter(x=>x.kind==='extension').map(x=>x.path).filter(Boolean);
  if(ext.length){const l=new DefaultResourceLoader({cwd:job.path,agentDir:join(dataDir,'pi'),noExtensions:true,noSkills:true,noPromptTemplates:true,noThemes:true,additionalExtensionPaths:ext,systemPromptOverride:()=>prompt});await l.reload();loader=l;}
@@ -39,14 +42,25 @@ try {
  name:'propose_workflow',label:'Propose workflow',description:'Save a disabled workflow draft. A user must enable it in the dashboard.',parameters:Type.Object({name:Type.String(),prompt:Type.String(),kind:Type.Union(['implement','review','address','conflict','test','coverage','improve','adapt'].map(x=>Type.Literal(x))),trigger:Type.Union(['schedule','change_created','change_updated','comment','conflict','test_failed'].map(x=>Type.Literal(x))),intervalMinutes:Type.Optional(Type.Number({minimum:5}))}),
  execute:async(_id:string,args:any)=>{const r=put('workflows',{...args,projectId:repo.projectId,repoId:repo.id,authorId:job.authorId,enabled:false,autonomy:'prepare',intervalMinutes:args.intervalMinutes||60,nextRun:Date.now()+(args.intervalMinutes||60)*60000,jobId:id});return {content:[{type:'text',text:`Workflow draft ${r.id} saved for review.`}],details:{id:r.id}};}
  }];
+ if(job.deploymentId){additionalTools.length=0;additionalTools.push({name:'propose_deployment_connection',label:'Propose deployment connection',description:'Save an unapproved, immutable host connection draft. This never executes the connection or authorizes operations.',parameters:Type.Object({content:Type.String(),notes:Type.String(),checkoutPaths:Type.Array(Type.String())}),execute:async(_id:string,args:any)=>{const user=get('users',job.authorId);if(!user)throw Error('Job owner unavailable');requireExternalAdmin(user);const c=saveConnectionDraft(job.deploymentId,args,user,id);return {content:[{type:'text',text:`Draft ${c.id} saved, digest ${c.digest}. Administrator review is required before any host execution.`}],details:{id:c.id,digest:c.digest}};}});}
  if(job.kind==='review')additionalTools.push({name:'submit_review',label:'Submit review',description:'Record your final review against these exact revisions. Approve only when there are no unresolved correctness concerns.',parameters:Type.Object({body:Type.String(),verdict:Type.Union([Type.Literal('approved'),Type.Literal('changes_requested'),Type.Literal('commented')])}),execute:async(_id:string,args:any)=>{send('review',args);return {content:[{type:'text',text:'Review recorded.'}],details:{}};}});
- const shell=createBashToolDefinition('/workspace',{exposeSessionEnvironment:false,operations:{exec:async(cmd,_cwd,options)=>{const user=get('users',job.authorId);if(!user||user.disabled||!canOperate(user,repo.projectId))throw Error('Job owner access was revoked');return dockerExec(container,cmd,options.onData,options.signal,options.timeout)}}});shell.name='workspace';shell.description='Run bash inside the isolated repository container. Use shell commands to read, edit, and test files in /workspace.';
+ const shell=createBashToolDefinition('/workspace',{exposeSessionEnvironment:false,operations:{exec:async(cmd,_cwd,options)=>{const user=get('users',job.authorId);if(!user||user.disabled||!canOperate(user,repo.projectId))throw Error('Job owner access was revoked');if(job.deploymentId)requireExternalAdmin(user);return dockerExec(container,cmd,options.onData,options.signal,options.timeout)}}});shell.name='workspace';shell.description='Run bash inside the isolated repository container. Use shell commands to read, edit, and test files in /workspace.';
  ({session}=await createAgentSession({cwd:job.path,agentDir:join(dataDir,'pi'),modelRuntime:mr,model,resourceLoader:loader,tools:['workspace',...additionalTools.map(t=>t.name),...loader.getExtensions().extensions.flatMap(e=>[...e.tools.keys()])],customTools:[shell as any,...additionalTools],sessionManager:manager,settingsManager:SettingsManager.inMemory({retry:{enabled:true,maxRetries:2}})}));
  send('session',manager.getSessionFile());
+ let streamedThinking = '';
  session.subscribe((e:any)=>{
   if(e.type==='message_update'){
    if(e.assistantMessageEvent.type==='text_delta')send('text',e.assistantMessageEvent.delta);
-   else if(e.assistantMessageEvent.type==='thinking_delta')send('thinking',e.assistantMessageEvent.delta);
+   else if(e.assistantMessageEvent.type==='thinking_delta'){
+    streamedThinking += e.assistantMessageEvent.delta;
+    send('thinking',e.assistantMessageEvent.delta);
+   }
+   else if(e.assistantMessageEvent.type==='thinking_end'){
+    if(!streamedThinking && e.assistantMessageEvent.content){
+     streamedThinking = e.assistantMessageEvent.content;
+     send('thinking',e.assistantMessageEvent.content);
+    }
+   }
   }
   else if(e.type==='tool_execution_start')send('tool',{toolCallId:e.toolCallId,name:e.toolName,args:e.args});
   else if(e.type==='tool_execution_update')send('tool_update',{toolCallId:e.toolCallId,name:e.toolName,args:e.args,partialResult:e.partialResult});
@@ -55,9 +69,21 @@ try {
    send('usage',{usage:e.message.usage,stopReason:e.message.stopReason});
    const fullText=e.message.content?.filter((c:any)=>c.type==='text').map((c:any)=>c.text).join('')||'';
    if(fullText)send('final_text',fullText);
+   const thinkingBlocks=e.message.content?.filter((c:any)=>c.type==='thinking').map((c:any)=>c.thinking).join('')||'';
+   if(thinkingBlocks && !streamedThinking){
+    send('thinking',thinkingBlocks);
+   }
+   streamedThinking = '';
   }
  });
- if(model.reasoning) session.setThinkingLevel(job.thinkingLevel||'off');
+ if(model.reasoning) {
+  const effectiveThinking = job.thinkingLevel && job.thinkingLevel !== 'off'
+   ? job.thinkingLevel
+   : (repo.thinkingLevel && repo.thinkingLevel !== 'off'
+      ? repo.thinkingLevel
+      : (job.thinkingLevel === 'off' ? 'off' : 'medium'));
+  session.setThinkingLevel(effectiveThinking);
+ }
  const promptImages=job.images?.map((img:any)=>({type:'image' as const,data:img.data,mimeType:img.mimeType||'image/png'}));
  await session.prompt(`${job.context||''}\n\n${job.resumePrompt||job.prompt}\n${job.kind==='review'?'Use submit_review to record your final verdict.':job.kind==='adapt'?'Use propose_resource and propose_workflow to save changes as drafts. For modifications to Orchestra itself, edit source code as an ordinary change request.':''}`,promptImages?.length?{images:promptImages}:undefined);const last=session.messages.filter((m:any)=>m.role==='assistant').at(-1);if(last?.stopReason==='error'||last?.stopReason==='aborted')throw Error(last.errorMessage||'Provider request did not complete');const finalRes=session.getLastAssistantText();if(finalRes)send('result',finalRes);
 }catch(e){send('failure',String(e));process.exitCode=1;}finally{session?.dispose();await stopSandbox(container);process.disconnect?.();}

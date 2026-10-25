@@ -16,7 +16,10 @@ const {
   previewLink,
   migratePreviewsToDeployments,
   notifyBranchUpdated,
-  updateDeployment
+  updateDeployment,
+  configureDeployment,
+  removeDeployment,
+  cleanupStoppedDeployments
 }=await import('../src/server/deployments.js');
 
 let app:any,ownerToken:string,user:any,project:any,repo:any,sourcePath:string;
@@ -216,4 +219,96 @@ test('deployments track specific branch and auto-update worktree when branch SHA
 
   // Clean up worktree
   await git.git(repo.path,'worktree','remove','--force',wtPath).catch(()=>{});
+});
+
+test('configureDeployment allows changing customName, branch and lifetimeMinutes', async () => {
+  const dep = store.put('deployments', {
+    repoId: repo.id,
+    projectId: project.id,
+    userId: user.id,
+    branch: 'main',
+    status: 'stopped',
+    lifetimeMinutes: 30
+  });
+
+  // Configure customName and infinite lifetime (0) via direct function
+  const configured = await configureDeployment(dep.id, {
+    customName: 'My Staging Server',
+    lifetimeMinutes: 0
+  });
+
+  assert.equal(configured?.customName, 'My Staging Server');
+  assert.equal(configured?.lifetimeMinutes, 0);
+
+  // Configure branch via HTTP PATCH endpoint
+  const res = await app.inject({
+    method: 'PATCH',
+    url: `/api/deployments/${dep.id}`,
+    headers: { authorization: `Bearer ${ownerToken}` },
+    payload: {
+      branch: 'feature-v2',
+      lifetimeMinutes: 1440
+    }
+  });
+
+  assert.equal(res.statusCode, 200);
+  const body = JSON.parse(res.body);
+  assert.equal(body.branch, 'feature-v2');
+  assert.equal(body.lifetimeMinutes, 1440);
+  assert.equal(body.customName, 'My Staging Server');
+});
+
+test('removeDeployment and DELETE /api/deployments/:id deletes deployment record', async () => {
+  const dep = store.put('deployments', {
+    repoId: repo.id,
+    projectId: project.id,
+    userId: user.id,
+    branch: 'main',
+    status: 'stopped'
+  });
+
+  const res = await app.inject({
+    method: 'DELETE',
+    url: `/api/deployments/${dep.id}`,
+    headers: { authorization: `Bearer ${ownerToken}` }
+  });
+
+  assert.equal(res.statusCode, 200);
+  assert.equal(store.get('deployments', dep.id), undefined);
+});
+
+test('cleanupStoppedDeployments removes stopped/failed deployments and preserves running ones', async () => {
+  const d1 = store.put('deployments', {
+    repoId: repo.id,
+    projectId: project.id,
+    status: 'stopped',
+    branch: 'main'
+  });
+  const d2 = store.put('deployments', {
+    repoId: repo.id,
+    projectId: project.id,
+    status: 'failed',
+    branch: 'main'
+  });
+  const d3 = store.put('deployments', {
+    repoId: repo.id,
+    projectId: project.id,
+    status: 'running',
+    branch: 'main'
+  });
+
+  const res = await app.inject({
+    method: 'POST',
+    url: '/api/deployments/cleanup',
+    headers: { authorization: `Bearer ${ownerToken}` },
+    payload: { projectId: project.id }
+  });
+
+  assert.equal(res.statusCode, 200);
+  const body = JSON.parse(res.body);
+  assert.equal(body.removed >= 2, true);
+
+  assert.equal(store.get('deployments', d1.id), undefined);
+  assert.equal(store.get('deployments', d2.id), undefined);
+  assert.ok(store.get('deployments', d3.id)); // running preserved
 });

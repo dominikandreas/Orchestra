@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { Bot, Terminal, Check, AlertCircle, Loader2, Sparkles, ChevronDown, Clock, Wrench } from 'lucide-react';
+import { Markdown } from './markdown';
 
 export interface SubagentChildInfo {
   agent: string;
@@ -317,9 +318,7 @@ export function SubagentCard({ tool, isRunning, formatToolData: customFormat }: 
                 <Sparkles size={12} />
                 <span>Subagent Findings</span>
               </div>
-              <div className="prose" style={{ whiteSpace: 'pre-wrap' }}>
-                {activeChild.output}
-              </div>
+              <Markdown>{activeChild.output}</Markdown>
             </div>
           )}
 

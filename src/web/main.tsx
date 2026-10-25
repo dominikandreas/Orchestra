@@ -260,6 +260,14 @@ function App(){
   },800);
  },[reloading,isAdmin,notify]);
 
+ const handleOpenJob=useCallback((jobId:string)=>{
+  const target=state.jobs.find((j:Item)=>j.id===jobId);
+  if(target&&target.projectId&&project!=='all'&&target.projectId!==project){
+   setProject(target.projectId);
+  }
+  go('sessions',jobId);
+ },[state.jobs,project,setProject,go]);
+
  if(loading){
   return <div className="auth-screen"><Spinner size={20}/><span>Loading Orchestra…</span></div>;
  }
@@ -284,14 +292,6 @@ function App(){
  const ongoingSessions=visibleJobs.filter((j:Item)=>activeStatuses.includes(j.status)||attentionStatuses.includes(j.status));
  const allOngoingJobs=state.jobs.filter((j:Item)=>(activeStatuses.includes(j.status)||attentionStatuses.includes(j.status))&&!j.archived);
  const otherOngoingJobs=project==='all'?[]:allOngoingJobs.filter((j:Item)=>j.projectId!==project);
-
- const handleOpenJob=useCallback((jobId:string)=>{
-  const target=state.jobs.find((j:Item)=>j.id===jobId);
-  if(target&&target.projectId&&project!=='all'&&target.projectId!==project){
-   setProject(target.projectId);
-  }
-  go('sessions',jobId);
- },[state.jobs,project,setProject,go]);
  const recentSidebarSessions=[...visibleJobs]
   .sort((a:Item,b:Item)=>(b.updated||b.created).localeCompare(a.updated||a.created))
   .slice(0,10);

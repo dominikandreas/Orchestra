@@ -92,6 +92,7 @@ export function SystemAssistantPage({
  const [source, setSource] = useState('');
  const [pluginName, setPluginName] = useState('');
  const [content, setContent] = useState('');
+ const [localCatalog, setLocalCatalog] = useState<Item[]>(catalog || []);
  const attachmentState = useAttachmentState();
  const end = useRef<HTMLDivElement>(null);
 
@@ -168,7 +169,6 @@ export function SystemAssistantPage({
   }
  }, [connections.length]);
 
- const [localCatalog, setLocalCatalog] = useState<Item[]>(catalog || []);
  useEffect(() => { if (catalog?.length) setLocalCatalog(catalog); }, [catalog]);
  useEffect(() => {
   if (selected?.provider && (!localCatalog.length || !localCatalog.some(p => p.id === selected.provider))) {

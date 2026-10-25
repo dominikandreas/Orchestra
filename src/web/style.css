@@ -603,15 +603,19 @@ h1, h2, h3, h4, p {
   position: relative;
   display: inline-flex;
 }
+.popover-anchor:has(.popover),
+.popover-anchor:focus-within {
+  z-index: 70;
+}
 .popover {
   position: absolute;
-  z-index: 60;
+  z-index: 120;
   min-width: 210px;
-  max-width: 320px;
+  max-width: min(380px, 92vw);
   background: var(--bg-elevated);
   border: 1px solid var(--line-strong);
   border-radius: 8px;
-  box-shadow: var(--shadow-md);
+  box-shadow: var(--shadow-lg);
   padding: 5px;
 }
 .popover-bottom {
@@ -627,8 +631,9 @@ h1, h2, h3, h4, p {
   right: 0;
 }
 .menu-scroll {
-  max-height: 260px;
+  max-height: min(280px, 45vh);
   overflow-y: auto;
+  overscroll-behavior: contain;
   display: flex;
   flex-direction: column;
   gap: 1px;
@@ -1752,7 +1757,8 @@ h1, h2, h3, h4, p {
   border: 1px solid var(--line-strong);
   border-radius: 10px;
   box-shadow: var(--shadow-lg);
-  overflow: hidden;
+  overflow: visible;
+  position: relative;
 }
 .modal-sm { max-width: 420px; }
 .modal-md { max-width: 540px; }
@@ -1765,6 +1771,8 @@ h1, h2, h3, h4, p {
   justify-content: space-between;
   padding: 12px 16px;
   border-bottom: 1px solid var(--line);
+  border-top-left-radius: 9px;
+  border-top-right-radius: 9px;
 }
 .modal-header h2 {
   font-size: 14.5px;
@@ -1784,6 +1792,8 @@ h1, h2, h3, h4, p {
   padding: 10px 16px;
   border-top: 1px solid var(--line);
   background: var(--bg);
+  border-bottom-left-radius: 9px;
+  border-bottom-right-radius: 9px;
 }
 
 .palette-input-wrap {

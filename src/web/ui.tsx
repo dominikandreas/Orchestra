@@ -68,9 +68,33 @@ export function Kbd({children}:{children:React.ReactNode}){return <kbd>{children
 export function Popover({trigger,children,align='start',placement='bottom',className,open:controlled,onOpenChange}:{trigger:(open:boolean,toggle:()=>void)=>React.ReactNode,children:React.ReactNode|((close:()=>void)=>React.ReactNode),align?:'start'|'end',placement?:'bottom'|'top',className?:string,open?:boolean,onOpenChange?:(o:boolean)=>void}){
  const [own,setOwn]=useState(false);const open=controlled??own;const set=(o:boolean)=>{setOwn(o);onOpenChange?.(o);};
  const ref=useRef<HTMLDivElement>(null);
+ const [actualPlacement,setActualPlacement]=useState<'bottom'|'top'>(placement);
+ const [actualAlign,setActualAlign]=useState<'start'|'end'>(align);
+
  useEffect(()=>{if(!open)return;const h=(e:MouseEvent)=>{if(ref.current&&!ref.current.contains(e.target as Node))set(false);};const k=(e:KeyboardEvent)=>{if(e.key==='Escape'){e.stopPropagation();set(false);}};document.addEventListener('mousedown',h);window.addEventListener('keydown',k,true);return()=>{document.removeEventListener('mousedown',h);window.removeEventListener('keydown',k,true);};},[open]);
+
+ useEffect(()=>{
+  if(!open||!ref.current||typeof window==='undefined')return;
+  const rect=ref.current.getBoundingClientRect();
+  const spaceBelow=window.innerHeight-rect.bottom;
+  const spaceAbove=rect.top;
+  if(placement==='bottom'&&spaceBelow<280&&spaceAbove>spaceBelow){
+   setActualPlacement('top');
+  }else if(placement==='top'&&spaceAbove<280&&spaceBelow>spaceAbove){
+   setActualPlacement('bottom');
+  }else{
+   setActualPlacement(placement);
+  }
+  const spaceRight=window.innerWidth-rect.left;
+  if(align==='start'&&spaceRight<280&&rect.right>280){
+   setActualAlign('end');
+  }else{
+   setActualAlign(align);
+  }
+ },[open,placement,align]);
+
  const close=()=>set(false);
- return <div className="popover-anchor" ref={ref}>{trigger(open,()=>set(!open))}{open&&<div className={cx('popover',`popover-${placement}`,`popover-${align}`,className)}>{typeof children==='function'?(children as any)(close):children}</div>}</div>;
+ return <div className="popover-anchor" ref={ref}>{trigger(open,()=>set(!open))}{open&&<div className={cx('popover',`popover-${actualPlacement}`,`popover-${actualAlign}`,className)}>{typeof children==='function'?(children as any)(close):children}</div>}</div>;
 }
 
 export function Menu({label,icon,children,align='end',buttonClass='icon-btn',title,placement}:{label?:React.ReactNode,icon?:React.ReactNode,children:(close:()=>void)=>React.ReactNode,align?:'start'|'end',buttonClass?:string,title?:string,placement?:'bottom'|'top'}){

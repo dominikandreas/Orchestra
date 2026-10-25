@@ -308,7 +308,7 @@ export function SubagentCard({ tool, isRunning, formatToolData: customFormat }: 
           {activeChild.partialOutput && !activeChild.output && (
             <div className="subagent-partial-output">
               <small style={{ color: 'var(--muted)', fontWeight: 600 }}>Live subagent output</small>
-              <pre>{activeChild.partialOutput}</pre>
+              <pre>{typeof activeChild.partialOutput === 'string' ? activeChild.partialOutput : formatter(activeChild.partialOutput)}</pre>
             </div>
           )}
 

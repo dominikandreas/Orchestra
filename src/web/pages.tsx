@@ -3,7 +3,7 @@ import {
  Plus,Sparkles,GitPullRequest,GitBranch,GitFork,FolderGit2,Bot,Zap,Rocket,
  Settings2,Search,ArrowRight,ExternalLink,Terminal,RotateCw,Square,Play,
  Trash2,KeyRound,Shield,Check,CheckCircle2,Copy,FileCode2,Archive,Pencil,
- SlidersHorizontal,Clock,Layers,AlertCircle
+ SlidersHorizontal,Clock,Layers,AlertCircle,Server
 } from 'lucide-react';
 import {
  api,ago,short,label,cx,autonomyModes,autonomyLabel,jobKinds,kindLabel,
@@ -65,6 +65,12 @@ export function AgentModal({agent,onClose}:{agent?:Item,onClose:()=>void}){
  const [model,setModel]=useState(agent?.model||'');
  const [thinkingLevel,setThinkingLevel]=useState(agent?.thinkingLevel||'off');
  const [autonomy,setAutonomy]=useState(agent?.autonomy||'prepare');
+ const defaultTools=agent?.tools||['workspace'];
+ const [enableDocker,setEnableDocker]=useState(defaultTools.includes('workspace'));
+ const [enableHostTerminal,setEnableHostTerminal]=useState(agent?.kind==='system'||defaultTools.includes('host_terminal'));
+ const [enableResources,setEnableResources]=useState(defaultTools.includes('propose_resource'));
+ const [enableWorkflows,setEnableWorkflows]=useState(defaultTools.includes('propose_workflow'));
+ const [selectedMcp,setSelectedMcp]=useState<string[]>(agent?.mcpServers||[]);
  const {busy,error,submit}=useSubmit();
 
  const connected=state.connections.filter((c:Item)=>c.status==='connected');
@@ -84,6 +90,11 @@ export function AgentModal({agent,onClose}:{agent?:Item,onClose:()=>void}){
       className="btn btn-primary"
       disabled={busy||!name.trim()||!instructions.trim()}
       onClick={()=>void submit(async()=>{
+       const tools:string[]=[];
+       if(enableDocker)tools.push('workspace');
+       if(enableHostTerminal)tools.push('host_terminal');
+       if(enableResources)tools.push('propose_resource');
+       if(enableWorkflows)tools.push('propose_workflow');
        const payload:Item={
         name:name.trim(),
         description:description.trim(),
@@ -93,7 +104,9 @@ export function AgentModal({agent,onClose}:{agent?:Item,onClose:()=>void}){
         connectionId:connectionId||undefined,
         model:model||undefined,
         thinkingLevel,
-        autonomy
+        autonomy,
+        tools,
+        mcpServers:selectedMcp
        };
        if(agent){
         await api(`/agents/${agent.id}`,'PATCH',payload);
@@ -132,7 +145,10 @@ export function AgentModal({agent,onClose}:{agent?:Item,onClose:()=>void}){
    </Field>
    <div className="form-grid-2">
     <Field label="Default mode">
-     <select value={kind} onChange={e=>setKind(e.target.value)}>
+     <select value={kind} onChange={e=>{
+      setKind(e.target.value);
+      if(e.target.value==='system')setEnableHostTerminal(true);
+     }}>
       {jobKinds.map(k=><option key={k.value} value={k.value}>{k.label}</option>)}
      </select>
     </Field>
@@ -168,6 +184,183 @@ export function AgentModal({agent,onClose}:{agent?:Item,onClose:()=>void}){
      <select value={thinkingLevel} onChange={e=>setThinkingLevel(e.target.value)}>
       {thinkingLevels.map(v=><option key={v} value={v}>{thinkingLabel[v]} ({v})</option>)}
      </select>
+    </Field>
+   </div>
+
+   <div className="stack-sm" style={{marginTop:12}}>
+    <label className="field-label"><strong>Configured Agent Tools & Execution Privileges</strong></label>
+    <div style={{display:'flex',flexDirection:'column',gap:8,background:'var(--bg-card)',padding:12,borderRadius:8,border:'1px solid var(--border)'}}>
+     <label style={{display:'flex',alignItems:'flex-start',gap:8,cursor:'pointer'}}>
+      <input type="checkbox" checked={enableDocker} onChange={e=>setEnableDocker(e.target.checked)}/>
+      <div>
+       <strong>Docker Container Workspace Shell (<code>workspace</code>)</strong>
+       <div className="muted" style={{fontSize:12}}>Default. Allows the agent to run terminal commands freely inside its isolated Docker container.</div>
+      </div>
+     </label>
+     <label style={{display:'flex',alignItems:'flex-start',gap:8,cursor:'pointer'}}>
+      <input type="checkbox" checked={enableHostTerminal} onChange={e=>setEnableHostTerminal(e.target.checked)}/>
+      <div>
+       <strong>Host Terminal Commands (<code>host_terminal</code> / System mode)</strong>
+       <div className="muted" style={{fontSize:12}}>Allows running commands directly on the host machine. Every host command is paused and requires administrator approval.</div>
+      </div>
+     </label>
+     <label style={{display:'flex',alignItems:'flex-start',gap:8,cursor:'pointer'}}>
+      <input type="checkbox" checked={enableResources} onChange={e=>setEnableResources(e.target.checked)}/>
+      <div>
+       <strong>Propose Prompts & Extensions (<code>propose_resource</code>)</strong>
+       <div className="muted" style={{fontSize:12}}>Allows proposing drafts for project prompts, skills, or TypeScript extensions.</div>
+      </div>
+     </label>
+     <label style={{display:'flex',alignItems:'flex-start',gap:8,cursor:'pointer'}}>
+      <input type="checkbox" checked={enableWorkflows} onChange={e=>setEnableWorkflows(e.target.checked)}/>
+      <div>
+       <strong>Propose Workflows (<code>propose_workflow</code>)</strong>
+       <div className="muted" style={{fontSize:12}}>Allows proposing automated background workflow drafts.</div>
+      </div>
+     </label>
+    </div>
+   </div>
+
+   {((state.mcpServers||[]).length>0)&&(
+    <div className="stack-sm" style={{marginTop:12}}>
+     <label className="field-label"><strong>Model Context Protocol (MCP) Servers</strong></label>
+     <div style={{display:'flex',flexDirection:'column',gap:8,background:'var(--bg-card)',padding:12,borderRadius:8,border:'1px solid var(--border)'}}>
+      <div className="muted" style={{fontSize:12,marginBottom:4}}>Select which MCP servers this agent can invoke tools from:</div>
+      {(state.mcpServers||[]).map((s:Item)=>(
+       <label key={s.id} style={{display:'flex',alignItems:'center',gap:8,cursor:'pointer'}}>
+        <input
+         type="checkbox"
+         checked={selectedMcp.includes(s.id)}
+         onChange={e=>{
+          if(e.target.checked) setSelectedMcp([...selectedMcp,s.id]);
+          else setSelectedMcp(selectedMcp.filter(id=>id!==s.id));
+         }}
+        />
+        <span><strong>{s.name}</strong> ({s.type}) {!s.enabled&&<span className="tag" style={{marginLeft:6}}>Disabled globally</span>}</span>
+       </label>
+      ))}
+     </div>
+    </div>
+   )}
+  </Modal>
+ );
+}
+
+export function McpServerModal({server,onClose}:{server?:Item,onClose:()=>void}){
+ const {state,project,refresh,notify,isAdmin}=useWorkspace();
+ const [name,setName]=useState(server?.name||'');
+ const [description,setDescription]=useState(server?.description||'');
+ const [type,setType]=useState<'stdio'|'sse'>(server?.type||'stdio');
+ const [command,setCommand]=useState(server?.command||'');
+ const [args,setArgs]=useState(Array.isArray(server?.args)?server.args.join(' '):(server?.args||''));
+ const [cwd,setCwd]=useState(server?.cwd||'');
+ const [url,setUrl]=useState(server?.url||'');
+ const [envText,setEnvText]=useState(server?.env?Object.entries(server.env).map(([k,v])=>`${k}=${v}`).join('\n'):'');
+ const [enabled,setEnabled]=useState(server?server.enabled!==false:true);
+ const [projectId,setProjectId]=useState(server?server.projectId||'':(project!=='all'?project:(isAdmin?'':state.projects[0]?.id||'')));
+ const {busy,error,submit}=useSubmit();
+
+ return (
+  <Modal
+   title={server?`Edit MCP Server: ${server.name}`:'Add Model Context Protocol (MCP) Server'}
+   size="lg"
+   onClose={onClose}
+   footer={
+    <>
+     <button type="button" className="btn" onClick={onClose} disabled={busy}>Cancel</button>
+     <button
+      type="button"
+      className="btn btn-primary"
+      disabled={busy||!name.trim()||(type==='stdio'?!command.trim():!url.trim())}
+      onClick={()=>void submit(async()=>{
+       const env:Record<string,string>={};
+       for(const line of envText.split('\n')){
+        const eq=line.indexOf('=');
+        if(eq>0){
+         env[line.slice(0,eq).trim()]=line.slice(eq+1).trim();
+        }
+       }
+       const payload:Item={
+        name:name.trim(),
+        description:description.trim(),
+        type,
+        command:type==='stdio'?command.trim():undefined,
+        args:type==='stdio'?args.split(/\s+/).filter(Boolean):undefined,
+        cwd:cwd.trim()||undefined,
+        url:type==='sse'?url.trim():undefined,
+        env:Object.keys(env).length?env:undefined,
+        enabled,
+        projectId:projectId||undefined
+       };
+       if(server){
+        await api(`/mcp-servers/${server.id}`,'PATCH',payload);
+        notify(`Updated MCP Server "${name.trim()}"`);
+       }else{
+        await api('/mcp-servers','POST',payload);
+        notify(`Added MCP Server "${name.trim()}"`);
+       }
+       await refresh();
+       onClose();
+      })}
+     >
+      {busy&&<RotateCw size={13} className="spin"/>}
+      <span>{server?'Save changes':'Add MCP server'}</span>
+     </button>
+    </>
+   }
+  >
+   <ErrorNote>{error}</ErrorNote>
+   <div className="form-grid-2">
+    <Field label="Server name">
+     <input required value={name} onChange={e=>setName(e.target.value)} placeholder="e.g. Filesystem MCP, Git MCP, SQLite MCP"/>
+    </Field>
+    <Field label="Transport Type">
+     <select value={type} onChange={e=>setType(e.target.value as any)}>
+      <option value="stdio">stdio (Subprocess command)</option>
+      <option value="sse">sse / HTTP (Remote Streamable HTTP)</option>
+     </select>
+    </Field>
+   </div>
+   <Field label="Description">
+    <input value={description} onChange={e=>setDescription(e.target.value)} placeholder="Available tools and purpose for agents…"/>
+   </Field>
+
+   {type==='stdio'?(
+    <>
+     <div className="form-grid-2">
+      <Field label="Executable command" hint="e.g. npx, uvx, node, python3, or binary path">
+       <input required value={command} onChange={e=>setCommand(e.target.value)} placeholder="npx, uvx, or /path/to/binary"/>
+      </Field>
+      <Field label="Command arguments" hint="Space-separated arguments">
+       <input value={args} onChange={e=>setArgs(e.target.value)} placeholder="-y @modelcontextprotocol/server-filesystem /tmp"/>
+      </Field>
+     </div>
+     <Field label="Working directory (optional)">
+      <input value={cwd} onChange={e=>setCwd(e.target.value)} placeholder="Defaults to server root directory"/>
+     </Field>
+    </>
+   ):(
+    <Field label="Server SSE URL" hint="Streamable HTTP / SSE endpoint">
+     <input required type="url" value={url} onChange={e=>setUrl(e.target.value)} placeholder="http://localhost:8000/sse"/>
+    </Field>
+   )}
+
+   <Field label="Environment variables" hint="KEY=VALUE pairs, one per line (optional)">
+    <textarea rows={3} value={envText} onChange={e=>setEnvText(e.target.value)} placeholder="API_KEY=xyz&#10;DEBUG=1"/>
+   </Field>
+
+   <div className="form-grid-2">
+    <Field label="Scope">
+     <select value={projectId} onChange={e=>setProjectId(e.target.value)}>
+      {isAdmin&&<option value="">All projects (workspace-wide)</option>}
+      {state.projects.map((p:Item)=><option key={p.id} value={p.id}>{p.name}</option>)}
+     </select>
+    </Field>
+    <Field label="Status">
+     <label style={{display:'flex',alignItems:'center',gap:8,marginTop:8,cursor:'pointer'}}>
+      <input type="checkbox" checked={enabled} onChange={e=>setEnabled(e.target.checked)}/>
+      <span>Enable this MCP server for agents</span>
+     </label>
     </Field>
    </div>
   </Modal>
@@ -762,7 +955,7 @@ export function ProjectModal({project:existing,onClose}:{project?:Item,onClose:(
         setProject(created.id);
         notify(`Created project "${created.name}"`);
         onClose();
-        go('repositories');
+        go('home');
        }
       })}
      >
@@ -1200,24 +1393,28 @@ export function ChangesPage({onNewSession}:{onNewSession:()=>void}){
 export function AgentsPage({onStartWithAgent}:{onStartWithAgent:(agentId:string)=>void}){
  const {state,project,modal,close,run,canEdit,isAdmin}=useWorkspace();
  const [resourceModal,setResourceModal]=useState(false);
- const [resProjectId,setResProjectId]=useState(project!=='all'?project:state.projects[0]?.id||'');
+ const [resProjectId,setResProjectId]=useState(project!=='all'?project:(isAdmin?'':state.projects[0]?.id||''));
  const [resName,setResName]=useState('');
  const [resKind,setResKind]=useState('prompt');
  const [resContent,setResContent]=useState('');
  const {busy:resBusy,error:resErr,submit:submitRes}=useSubmit();
 
  const agents=(state.agents||[]).filter((a:Item)=>project==='all'||!a.projectId||a.projectId===project);
- const resources=(state.resources||[]).filter((r:Item)=>project==='all'||r.projectId===project);
+ const resources=(state.resources||[]).filter((r:Item)=>project==='all'||!r.projectId||r.projectId===project);
+ const mcpServers=(state.mcpServers||[]).filter((s:Item)=>project==='all'||!s.projectId||s.projectId===project);
  const findProjectName=(id?:string)=>id?state.projects.find((p:Item)=>p.id===id)?.name||'Project':'Workspace-wide';
 
  return (
   <div className="page-body stack-lg">
    <PageHeader
     title="Agents & Skills"
-    subtitle="Reusable agent personas with specialized instructions, default models, thinking effort, and autonomy policies."
+    subtitle="Reusable agent personas with specialized instructions, tools, MCP servers, default models, and autonomy policies."
     actions={
      canEdit&&(
       <div className="toolbar-actions">
+       {isAdmin&&<button type="button" className="btn btn-sm" onClick={()=>modal(<McpServerModal onClose={close}/>)}>
+        <Server size={13}/><span>New MCP server</span>
+       </button>}
        <button type="button" className="btn btn-sm" onClick={()=>setResourceModal(true)}>
         <FileCode2 size={13}/><span>New skill / resource</span>
        </button>
@@ -1269,6 +1466,8 @@ export function AgentsPage({onStartWithAgent}:{onStartWithAgent:(agentId:string)
           <span className="tag">{autonomyLabel(a.autonomy)}</span>
           {a.model&&<span className="tag">{a.model}</span>}
           {a.thinkingLevel&&a.thinkingLevel!=='off'&&<span className="tag">Thinking: {thinkingLabel[a.thinkingLevel]||a.thinkingLevel}</span>}
+          {(a.kind==='system'||a.tools?.includes('host_terminal'))&&<span className="tag tag-accent"><Terminal size={11}/>Host terminal</span>}
+          {a.mcpServers?.length>0&&<span className="tag"><Server size={11}/>{a.mcpServers.length} MCP</span>}
          </div>
          {canEdit&&(
           <button type="button" className="btn btn-sm btn-primary" onClick={()=>onStartWithAgent(a.id)}>
@@ -1287,7 +1486,108 @@ export function AgentsPage({onStartWithAgent}:{onStartWithAgent:(agentId:string)
    </section>
 
    <section className="stack-sm">
-    <h2 className="section-title"><FileCode2 size={14}/><span>Project Prompts, Skills & Extensions ({resources.length})</span></h2>
+    <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+     <h2 className="section-title"><Server size={14}/><span>Model Context Protocol (MCP) Servers ({mcpServers.length})</span></h2>
+     {isAdmin&&(
+      <button type="button" className="btn btn-sm" onClick={()=>modal(<McpServerModal onClose={close}/>)}>
+       <Plus size={13}/><span>Add MCP server</span>
+      </button>
+     )}
+    </div>
+    {mcpServers.length?(
+     <div className="card-grid">
+      {mcpServers.map((s:Item)=>(
+       <article key={s.id} className="card padded agent-card">
+        <div className="agent-card-top">
+         <div>
+          <div className="row-title-line">
+           <Server size={15}/>
+           <strong>{s.name}</strong>
+           <span className="tag">{s.type}</span>
+           <span className="tag">{findProjectName(s.projectId)}</span>
+          </div>
+          {s.description&&<p className="muted" style={{marginTop:4}}>{s.description}</p>}
+         </div>
+         {isAdmin&&(
+          <div className="toolbar-actions">
+           <button
+            type="button"
+            className="btn btn-xs"
+            onClick={()=>void run(()=>api(`/mcp-servers/${s.id}/sync`,'POST',{}),`Refreshed tools for ${s.name}`)}
+            title="Test connection and refresh tool list"
+           >
+            <RotateCw size={11}/><span>Sync</span>
+           </button>
+           <button
+            type="button"
+            className={cx('btn btn-xs',s.enabled?'btn-secondary':'btn-primary')}
+            onClick={()=>void run(()=>api(`/mcp-servers/${s.id}`,'PATCH',{enabled:!s.enabled}),s.enabled?'Disabled server':'Enabled server')}
+           >
+            {s.enabled?'Disable':'Enable'}
+           </button>
+           <button type="button" className="icon-btn" title="Edit server" onClick={()=>modal(<McpServerModal server={s} onClose={close}/>)}>
+            <Pencil size={13}/>
+           </button>
+           <button
+            type="button"
+            className="icon-btn"
+            title="Delete server"
+            onClick={()=>void run(()=>api(`/mcp-servers/${s.id}`,'DELETE'),'MCP server removed')}
+           >
+            <Trash2 size={13}/>
+           </button>
+          </div>
+         )}
+        </div>
+
+        <div style={{fontSize:12,margin:'8px 0'}}>
+         {!isAdmin?<span className="muted">Administrator-managed connection</span>:s.type==='stdio'?(
+          <code>{s.command} {Array.isArray(s.args)?s.args.join(' '):s.args}</code>
+         ):(
+          <code>{s.url}</code>
+         )}
+        </div>
+
+        {s.error&&(
+         <div className="tone-bad-text" style={{fontSize:12,margin:'4px 0'}}>
+          Connection error: {s.error}
+         </div>
+        )}
+
+        <div className="agent-card-foot">
+         <div className="agent-badges">
+          <span className={cx('tag',s.enabled?'tag-accent':'')}>{s.enabled?'Enabled':'Disabled'}</span>
+          {s.tools?.length!==undefined&&(
+           <span className="tag">{s.tools.length} tool{s.tools.length===1?'':'s'}</span>
+          )}
+          {s.lastSynced&&<span className="muted-meta">Synced {ago(s.lastSynced)}</span>}
+         </div>
+        </div>
+
+        {s.tools?.length>0&&(
+         <details style={{marginTop:8,fontSize:12}}>
+          <summary style={{cursor:'pointer',color:'var(--muted)'}}>View discovered tools ({s.tools.length})</summary>
+          <div style={{marginTop:6,display:'flex',flexDirection:'column',gap:4}}>
+           {s.tools.map((t:Item,idx:number)=>(
+            <div key={idx} style={{background:'var(--bg-card)',padding:'4px 8px',borderRadius:4,border:'1px solid var(--border)'}}>
+             <strong><code>{t.name}</code></strong>: <span className="muted">{t.description||'No description'}</span>
+            </div>
+           ))}
+          </div>
+         </details>
+        )}
+       </article>
+      ))}
+     </div>
+    ):(
+     <Empty icon={Server} title="No MCP servers configured">
+      Connect Model Context Protocol (MCP) servers (e.g. filesystem, database, github, web search) to provide custom tools to your agents.
+     </Empty>
+    )}
+   </section>
+
+   <section className="stack-sm">
+    <h2 className="section-title"><FileCode2 size={14}/><span>Prompts, Skills & Extensions ({resources.length})</span></h2>
     {resources.length?(
      <div className="card-grid">
       {resources.map((r:Item)=>(
@@ -1313,15 +1613,15 @@ export function AgentsPage({onStartWithAgent}:{onStartWithAgent:(agentId:string)
       ))}
      </div>
     ):(
-     <Empty icon={FileCode2} title="No project resources yet">
-      Save shared prompts, reusable skills, or Pi TypeScript extensions scoped to your projects.
+     <Empty icon={FileCode2} title="No resources yet">
+      Save shared prompts, reusable skills, or Pi TypeScript extensions scoped to your projects or workspace-wide.
      </Empty>
     )}
    </section>
 
    {resourceModal&&(
     <Modal
-     title="New project resource"
+     title="New resource"
      onClose={()=>setResourceModal(false)}
      footer={
       <>
@@ -1329,10 +1629,10 @@ export function AgentsPage({onStartWithAgent}:{onStartWithAgent:(agentId:string)
        <button
         type="button"
         className="btn btn-primary"
-        disabled={resBusy||!resName.trim()||!resContent.trim()||!resProjectId}
+        disabled={resBusy||!resName.trim()||!resContent.trim()||(!isAdmin&&!resProjectId)}
         onClick={()=>void submitRes(async()=>{
          await api('/resources','POST',{
-          projectId:resProjectId,
+          projectId:resProjectId||undefined,
           name:resName.trim(),
           kind:resKind,
           content:resContent
@@ -1350,8 +1650,9 @@ export function AgentsPage({onStartWithAgent}:{onStartWithAgent:(agentId:string)
     >
      <ErrorNote>{resErr}</ErrorNote>
      <div className="form-grid-2">
-      <Field label="Project">
+      <Field label="Scope">
        <select value={resProjectId} onChange={e=>setResProjectId(e.target.value)}>
+        {isAdmin&&<option value="">All projects (workspace-wide)</option>}
         {state.projects.map((p:Item)=><option key={p.id} value={p.id}>{p.name}</option>)}
        </select>
       </Field>

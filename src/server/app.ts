@@ -1,4 +1,9 @@
-import {adminSnapshot,adminThread,createAdminThread,startAdminTurn,stopAdminTurn,deleteAdminThread} from './admin-agent.js';
+import {adminSnapshot,adminThread,createAdminThread,startAdminTurn,stopAdminTurn,deleteAdminThread,editAdminMessage,deleteAdminMessage,forkAdminThread} from './admin-agent.js';
+import {registerProjectAgentRoutes} from './project-agent.js';
+import {registerPlannedChangeRoutes} from './planned-change.js';
+import {registerChangePipelineRoutes,getChangePipeline} from './change-pipeline.js';
+import {ensureProjectKnowledge,projectKnowledge,saveProjectKnowledge,projectMetadataHistory,readProjectMetadata,updateProjectMetadata} from './project-metadata.js';
+import {structuredChangeDiff,structuredChangeFileDiff} from './structured-diff.js';
 import {proposeAction,decideAction,draftPlugin} from './admin-control.js';
 import Fastify from 'fastify';
 import ts from 'typescript';
@@ -9,15 +14,16 @@ import { resolve,join } from 'node:path';
 import { existsSync,readFileSync } from 'node:fs';
 import { readFile,writeFile,mkdir,rm } from 'node:fs/promises';
 import { all,get,put,del,hash,admin,canProject,canOperate,issueInvite,redeemInvite,audit,event,events,eventBus,searchEvents,encrypt,dataDir,installationDeviceId,type Row } from './store.js';
-import { importRepository,createLocalRepository,branches,branchDetails,createBranch,deleteBranch,repoTree,repoBlob,repoCommits,createChange,diffChange,refreshChange,mergeChange,command,git,syncRepository } from './git.js';
+import { importRepository,createLocalRepository,branches,branchDetails,createBranch,deleteBranch,repoTree,repoBlob,repoCommits,createChange,diffChange,refreshChange,mergeChange,command,git,syncRepository,revision } from './git.js';
 import { runtime,safeConnection,usable } from './providers.js';
 import { enqueue,signalJob,emitAutomation,maybeAutoMerge,submitChangeForJob,updateJobSettings,forkJob,jobDiff,visibleAgent } from './jobs.js';
 import { startDeployment,stopDeployment,restartDeployment,configureDeployment,removeDeployment,cleanupStoppedDeployments,deploymentLink,registerDeploymentIngress,migratePreviewsToDeployments,startPreview,stopPreview,previewLink,registerPreviewIngress } from './deployments.js';
 import { connectionContract } from './external-contract.js';
 import { externalAccess,externalDetail,saveConnectionDraft,approveConnection,requestExternalOperation,approveExternalOperation,setExternalPolicy } from './external.js';
+import { syncMcpServerTools,safeMcpServer } from './mcp.js';
 const str=z.string().trim().min(1).max(20000),id=z.string().uuid();
 const mode=z.enum(['approve','prepare','auto']);
-const kind=z.enum(['implement','review','address','conflict','test','coverage','improve','adapt']);
+const kind=z.enum(['implement','review','address','conflict','test','coverage','improve','adapt','system']);
 const thinking=z.enum(['off','minimal','low','medium','high','xhigh']);
 const optId=id.or(z.literal('')).nullable().optional();
 const optMode=mode.or(z.literal('')).nullable().optional();
@@ -33,8 +39,12 @@ export async function createApp(){const app=Fastify({logger:false,forceCloseConn
  app.addHook('onSend',async(_req,reply,payload)=>{reply.header('X-Content-Type-Options','nosniff').header('Referrer-Policy','no-referrer').header('X-Frame-Options','DENY').header('Content-Security-Policy',"default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'");return payload;});
  app.addHook('preHandler',async(req:any,reply)=>{const route=req.routeOptions.url||req.url; if(!route.startsWith('/api/')||['/api/health','/api/setup','/api/redeem'].includes(route))return;const raw=req.headers.authorization?.replace(/^Bearer /,'');const d=raw&&all('devices').find(d=>d.hash===hash(raw));const u=d&&get('users',d.userId);if(!u||u.disabled)return reply.code(401).send({error:'Sign in with a device invitation.'});req.user=u;req.device=d;});
  const user=(req:any):Row=>req.user;const needAdmin=(req:any)=>{if(!admin(user(req)))throw Error('Administrator access required')};
- const entity=(req:any,type:string,key:string,write=false)=>{const r=get(type,key);if(!r)throw Error('Not found');const projectId=type==='projects'?r.id:r.projectId;if(!(write?canOperate(user(req),projectId):canProject(user(req),projectId)))throw Error('Project access denied');return r;};
+ const entity=(req:any,type:string,key:string,write=false)=>{const r=get(type,key);if(!r)throw Error('Not found');const projectId=type==='projects'?r.id:r.projectId;const allowed=!projectId?(write?admin(user(req)):true):(write?canOperate(user(req),projectId):canProject(user(req),projectId));if(!allowed)throw Error('Project access denied');return r;};
+ const guardProjectWrite=(req:any,projectId:string)=>{const actor=get('users',user(req).id);if(!actor||actor.disabled||!get('projects',projectId)||!canOperate(actor,projectId))throw Error('Project access denied');};
  const base=(req:any)=>process.env.RELAY_BASE_URL||`${process.env.RELAY_TLS_CERT?'https':'http'}://${req.headers.host}`;
+ registerProjectAgentRoutes(app);
+ registerChangePipelineRoutes(app);
+ registerPlannedChangeRoutes(app);
  app.get('/api/health',()=>({ok:true,name:'Orchestra'}));
  app.get('/api/setup',()=>({initialized:all('users').length>0}));
  const attempts=new Map<string,{n:number,until:number}>();
@@ -42,7 +52,7 @@ export async function createApp(){const app=Fastify({logger:false,forceCloseConn
  app.get('/api/me',(req:any)=>({user:req.user,deviceId:req.device.id}));
  app.get('/api/state',async(req)=>{
   const u=user(req);
-  const visible=(x:Row)=>canProject(u,x.projectId);
+  const visible=(x:Row)=>!x.projectId||canProject(u,x.projectId);
   const r=await runtime();
   const providers=r.getProviders().map(p=>({id:p.id,name:p.name,methods:r.hasConfiguredAuth(p.id)||(p as any).baseUrl?.startsWith('cli:')?[]:[...(p.auth.apiKey?.login?['api_key']:[]),...(p.auth.oauth?['oauth']:[])],models:r.getModels(p.id).map(m=>({id:m.id,name:m.name}))}));
   return {
@@ -52,11 +62,12 @@ export async function createApp(){const app=Fastify({logger:false,forceCloseConn
    jobs:all('jobs').filter(visible),
    workflows:all('workflows').filter(visible),
    agents:all('agents').filter(a=>!a.projectId||canProject(u,a.projectId)),
-   threads:admin(u)?all('adminThreads').filter(t=>t.authorId===u.id).map(t=>({id:t.id,title:t.title,updated:t.updated,created:t.created,permissionMode:t.permissionMode,running:all('adminRuns').some(row=>row.threadId===t.id&&row.status==='running')})):[],
+   threads:admin(u)?all('adminThreads').filter(t=>t.authorId===u.id).map(t=>({id:t.id,title:t.title,updated:t.updated,created:t.created,permissionMode:t.permissionMode,parentThreadId:t.parentThreadId,running:all('adminRuns').some(row=>row.threadId===t.id&&row.status==='running')})):[],
    previews:all('deployments').concat(all('previews')).filter(visible),
    deployments:all('deployments').concat(all('previews')).filter(visible),
    externalDeployments:all('externalDeployments').filter(visible),
    resources:all('resources').filter(visible),
+   mcpServers:all('mcpServers').filter(s=>!s.projectId||canProject(u,s.projectId)).map(s=>safeMcpServer(s,u)),
    connections:all('connections').filter(c=>c.ownerId===u.id||admin(u)||c.shared&&(c.projects||[]).some((p:string)=>canProject(u,p))).map(c=>safeConnection(c,r)),
    providers
   };
@@ -111,17 +122,17 @@ export async function createApp(){const app=Fastify({logger:false,forceCloseConn
   return {sessions,changes};
  });
  app.post('/api/agents',req=>{
-  const b=body(req,z.object({name:z.string().trim().min(1).max(200),description:z.string().max(2000).default(''),instructions:str,projectId:optId,connectionId:z.string().nullable().optional(),model:z.string().nullable().optional(),thinkingLevel:optThinking,autonomy:optMode,kind:kind.default('implement')}));
+  const b=body(req,z.object({name:z.string().trim().min(1).max(200),description:z.string().max(2000).default(''),instructions:str,projectId:optId,connectionId:z.string().nullable().optional(),model:z.string().nullable().optional(),thinkingLevel:optThinking,autonomy:optMode,kind:kind.default('implement'),tools:z.array(z.string()).optional(),mcpServers:z.array(z.string()).optional()}));
   const projectId=b.projectId||undefined;
   if(projectId)entity(req,'projects',projectId,true);else needAdmin(req);
-  const agent=put('agents',{name:b.name,description:b.description,instructions:b.instructions,projectId,connectionId:b.connectionId||undefined,model:b.model||undefined,thinkingLevel:b.thinkingLevel||undefined,autonomy:b.autonomy||undefined,kind:b.kind||'implement',authorId:user(req).id});
+  const agent=put('agents',{name:b.name,description:b.description,instructions:b.instructions,projectId,connectionId:b.connectionId||undefined,model:b.model||undefined,thinkingLevel:b.thinkingLevel||undefined,autonomy:b.autonomy||undefined,kind:b.kind||'implement',tools:b.tools,mcpServers:b.mcpServers,authorId:user(req).id});
   audit(user(req).id,'agent.create',agent.id);
   return agent;
  });
  app.patch('/api/agents/:id',(req:any)=>{
   const a=get('agents',req.params.id);if(!a)throw Error('Not found');
   if(a.projectId)entity(req,'projects',a.projectId,true);else needAdmin(req);
-  const b=body(req,z.object({name:z.string().trim().min(1).max(200).optional(),description:z.string().max(2000).optional(),instructions:str.optional(),projectId:optId,connectionId:z.string().nullable().optional(),model:z.string().nullable().optional(),thinkingLevel:optThinking,autonomy:optMode,kind:kind.optional()}));
+  const b=body(req,z.object({name:z.string().trim().min(1).max(200).optional(),description:z.string().max(2000).optional(),instructions:str.optional(),projectId:optId,connectionId:z.string().nullable().optional(),model:z.string().nullable().optional(),thinkingLevel:optThinking,autonomy:optMode,kind:kind.optional(),tools:z.array(z.string()).optional(),mcpServers:z.array(z.string()).optional()}));
   if(b.projectId!==undefined){if(b.projectId)entity(req,'projects',b.projectId,true);else needAdmin(req);}
   const patch:Record<string,any>={id:a.id};
   for(const [k,v] of Object.entries(b))if(v!==undefined)patch[k]=v===null||(v===''&&k!=='description')?undefined:v;
@@ -136,8 +147,54 @@ export async function createApp(){const app=Fastify({logger:false,forceCloseConn
   audit(user(req).id,'agent.delete',a.id);
   return {ok:true,id:a.id};
  });
- app.post('/api/projects',req=>{needAdmin(req);return put('projects',body(req,z.object({name:str,description:z.string().max(2000).default('')})))});
- app.patch('/api/projects/:id',req=>{needAdmin(req);const p=entity(req,'projects',(req.params as any).id,true);const b=body(req,z.object({name:str.optional(),description:z.string().max(2000).optional()}));audit(user(req).id,'project.update',p.id);return put('projects',{id:p.id,...b});});
+ app.get('/api/mcp-servers',req=>{
+  const u=user(req);
+  return all('mcpServers').filter(s=>!s.projectId||canProject(u,s.projectId)).map(s=>safeMcpServer(s,u));
+ });
+ app.post('/api/mcp-servers',async req=>{
+  needAdmin(req);
+  const b=body(req,z.object({name:z.string().trim().min(1).max(100),description:z.string().max(2000).default(''),type:z.enum(['stdio','sse']).default('stdio'),command:z.string().trim().optional(),args:z.array(z.string()).or(z.string().transform(s=>s.split(/\s+/).filter(Boolean))).optional(),cwd:z.string().optional(),env:z.record(z.string(),z.string()).optional(),url:z.string().url().optional(),enabled:z.boolean().default(true),projectId:optId}));
+  const projectId=b.projectId||undefined;
+  if(projectId)entity(req,'projects',projectId,true);else needAdmin(req);
+  const server=put('mcpServers',{name:b.name,description:b.description,type:b.type,command:b.command,args:b.args||[],cwd:b.cwd,env:b.env,url:b.url,enabled:b.enabled,projectId,authorId:user(req).id});
+  audit(user(req).id,'mcp_server.create',server.id);
+  if(server.enabled)void syncMcpServerTools(server).catch(()=>{});
+  return server;
+ });
+ app.patch('/api/mcp-servers/:id',async(req:any)=>{
+  needAdmin(req);
+  const s=get('mcpServers',req.params.id);if(!s)throw Error('MCP server not found');
+  if(s.projectId)entity(req,'projects',s.projectId,true);else needAdmin(req);
+  const b=body(req,z.object({name:z.string().trim().min(1).max(100).optional(),description:z.string().max(2000).optional(),type:z.enum(['stdio','sse']).optional(),command:z.string().trim().optional(),args:z.array(z.string()).or(z.string().transform(s=>s.split(/\s+/).filter(Boolean))).optional(),cwd:z.string().optional(),env:z.record(z.string(),z.string()).optional(),url:z.string().url().optional(),enabled:z.boolean().optional(),projectId:optId}));
+  if(b.projectId!==undefined){if(b.projectId)entity(req,'projects',b.projectId,true);else needAdmin(req);}
+  const patch:Record<string,any>={id:s.id};
+  for(const [k,v] of Object.entries(b))if(v!==undefined)patch[k]=v===null||(v===''&&k!=='description')?undefined:v;
+  const updated=put('mcpServers',patch);
+  audit(user(req).id,'mcp_server.update',s.id);
+  return updated;
+ });
+ app.delete('/api/mcp-servers/:id',(req:any)=>{
+  needAdmin(req);
+  const s=get('mcpServers',req.params.id);if(!s)throw Error('MCP server not found');
+  if(s.projectId)entity(req,'projects',s.projectId,true);else needAdmin(req);
+  del('mcpServers',s.id);
+  audit(user(req).id,'mcp_server.delete',s.id);
+  return {ok:true,id:s.id};
+ });
+ app.post('/api/mcp-servers/:id/sync',async(req:any)=>{
+  needAdmin(req);
+  const s=get('mcpServers',req.params.id);if(!s)throw Error('MCP server not found');
+  if(s.projectId)entity(req,'projects',s.projectId,true);else needAdmin(req);
+  const tools=await syncMcpServerTools(s);
+  audit(user(req).id,'mcp_server.sync',s.id);
+  return {ok:true,tools};
+ });
+ app.post('/api/projects',async req=>{needAdmin(req);const p=put('projects',body(req,z.object({name:str,description:z.string().max(2000).default('')})));try{await ensureProjectKnowledge(p);return p;}catch(e){del('projects',p.id);throw e;}});
+ app.get('/api/projects/:id/knowledge',async(req:any)=>{const p=entity(req,'projects',req.params.id);return projectKnowledge(p);});
+ app.put('/api/projects/:id/knowledge',async(req:any)=>{const p=entity(req,'projects',req.params.id,true);const b=body(req,z.object({path:z.string().min(1).max(240),content:z.string().max(256*1024),revision:z.string().optional()}));const result=await saveProjectKnowledge(p,b.path,b.content,user(req),b.revision,()=>guardProjectWrite(req,p.id));audit(user(req).id,'project.knowledge.update',`${p.id}:${b.path}`);return result;});
+ app.get('/api/projects/:id/knowledge/history',async(req:any)=>{const p=entity(req,'projects',req.params.id);await ensureProjectKnowledge(p);return {history:await projectMetadataHistory(p.id)};});
+ app.get('/api/projects/:id/knowledge/revision/:revision',async(req:any)=>{const p=entity(req,'projects',req.params.id);await ensureProjectKnowledge(p);return readProjectMetadata(p.id,req.params.revision);});
+ app.patch('/api/projects/:id',async req=>{needAdmin(req);const p=entity(req,'projects',(req.params as any).id,true);const b=body(req,z.object({name:str.optional(),description:z.string().max(2000).optional()}));const metadata=await ensureProjectKnowledge(p);await updateProjectMetadata(p.id,b,metadata.revision,user(req),()=>{guardProjectWrite(req,p.id);const actor=get('users',user(req).id)!;if(!admin(actor))throw Error('Administrator access required');});audit(user(req).id,'project.update',p.id);return put('projects',{id:p.id,...b});});
  app.delete('/api/projects/:id',async req=>{needAdmin(req);const p=entity(req,'projects',(req.params as any).id,true);const reposInProject=all('repos').filter(r=>r.projectId===p.id);if(reposInProject.length>0)throw Error(`Cannot delete project "${p.name}". It contains ${reposInProject.length} repository/repositories. Please remove or delete them first.`);del('projects',p.id);for(const w of all('workflows').filter(w=>w.projectId===p.id))del('workflows',w.id);for(const res of all('resources').filter(res=>res.projectId===p.id))del('resources',res.id);for(const a of all('agents').filter(a=>a.projectId===p.id))del('agents',a.id);audit(user(req).id,'project.delete',p.id);return {ok:true,id:p.id};});
  app.post('/api/repos',async req=>{needAdmin(req);const b=body(req,z.object({projectId:id,name:str,source:str,base:z.string().optional(),createLocal:z.boolean().optional().default(false)}));entity(req,'projects',b.projectId,true);let source=b.source.trim();if(b.createLocal){source=await createLocalRepository(source,b.name,b.base||'main');}const repo=await importRepository(source,b.name,b.projectId,b.base);audit(user(req).id,b.createLocal?'repository.create':'repository.import',repo.id);return repo;});
  app.delete('/api/repos/:id',async req=>{needAdmin(req);const r=entity(req,'repos',(req.params as any).id,true);if(r.self)throw Error('Cannot delete Orchestra self-repository');del('repos',r.id);if(r.path)await rm(r.path,{recursive:true,force:true}).catch(()=>{});for(const j of all('jobs').filter(j=>j.repoId===r.id)){await rm(join(dataDir,'worktrees',j.id),{recursive:true,force:true}).catch(()=>{});del('jobs',j.id);}for(const c of all('changes').filter(c=>c.repoId===r.id))del('changes',c.id);for(const w of all('workflows').filter(w=>w.repoId===r.id))del('workflows',w.id);audit(user(req).id,'repository.delete',r.id);return {ok:true,id:r.id};});
@@ -152,14 +209,28 @@ export async function createApp(){const app=Fastify({logger:false,forceCloseConn
  app.get('/api/repos/:id/commits',async(req:any)=>{const r=entity(req,'repos',req.params.id);const q=req.query||{};const limit=parseInt(q.limit as string,10)||30;return {commits:await repoCommits(r,q.ref,limit)};});
  app.get('/api/repos/:id/activity',async(req:any)=>{const r=entity(req,'repos',req.params.id);const repoChanges=all('changes').filter(c=>c.repoId===r.id);const changeIds=new Set(repoChanges.map(c=>c.id));const reviews=all('reviews').filter(rv=>changeIds.has(rv.changeId)).sort((a,b)=>b.created.localeCompare(a.created));const checks=all('checks').filter(ck=>changeIds.has(ck.changeId)).sort((a,b)=>b.created.localeCompare(a.created));return {reviews,checks};});
  app.post('/api/changes',async req=>{const b=body(req,z.object({repoId:id,source:str,target:str,title:str}));const r=entity(req,'repos',b.repoId,true);const c=await createChange(r,b.source,b.target,b.title,user(req).id);emitAutomation('change_created',c);return c;});
- app.get('/api/changes/:id',async(req:any)=>{const c=entity(req,'changes',req.params.id);return {...c,diff:await diffChange(c),comments:all('comments').filter(x=>x.changeId===c.id),reviews:all('reviews').filter(x=>x.changeId===c.id),checks:all('checks').filter(x=>x.changeId===c.id)}});
+ app.get('/api/changes/:id',async(req:any)=>{let c=entity(req,'changes',req.params.id);let mergeCheckError:string|undefined;if(c.status==='open'){try{c=await refreshChange(c);}catch(e){mergeCheckError=e instanceof Error?e.message:String(e);}}return {...c,...(mergeCheckError?{conflict:null,mergeCheckError}:{}),...(req.query.includeDiff==='false'?{}:{diff:await diffChange(c,{includeGenerated:req.query.includeGenerated==='true'})}),pipeline:getChangePipeline(c.id)||null,comments:all('comments').filter(x=>x.changeId===c.id),reviews:all('reviews').filter(x=>x.changeId===c.id),checks:all('checks').filter(x=>x.changeId===c.id)}});
+ app.get('/api/changes/:id/files',async(req:any)=>{const c=entity(req,'changes',req.params.id);const q=z.object({includeHidden:z.enum(['true','false']).optional(),offset:z.coerce.number().int().nonnegative().optional(),limit:z.coerce.number().int().min(1).max(500).optional()}).parse(req.query);return structuredChangeDiff(c,{includeHidden:q.includeHidden==='true',offset:q.offset,limit:q.limit});});
+ app.get('/api/changes/:id/file',async(req:any)=>{const c=entity(req,'changes',req.params.id);const q=z.object({path:z.string().min(1),includeHidden:z.enum(['true','false']).optional()}).parse(req.query);return structuredChangeFileDiff(c,q.path,{includeHidden:q.includeHidden==='true'});});
  app.post('/api/changes/:id/refresh',async(req:any)=>{const c=await refreshChange(entity(req,'changes',req.params.id,true));emitAutomation('change_updated',c);return c});
  app.post('/api/changes/:id/force-merge',async(req:any)=>{needAdmin(req);entity(req,'changes',req.params.id,true);const b=z.object({sourceSha:z.string().min(1),targetSha:z.string().min(1),reason:z.string().trim().min(1).max(2000)}).parse(req.body);return mergeChange(req.params.id,{...b,force:{actorId:user(req).id,reason:b.reason}});});
  app.post('/api/changes/:id/merge',async(req:any)=>{entity(req,'changes',req.params.id,true);const r=await mergeChange(req.params.id);audit(user(req).id,'change.merge',r.id);return r;});
  app.post('/api/changes/:id/close',async(req:any)=>{const c=entity(req,'changes',req.params.id,true);if(c.status!=='open')throw Error('Only open change requests can be closed');const updated=put('changes',{id:c.id,status:'closed',closedBy:user(req).id,closedAt:new Date().toISOString()});audit(user(req).id,'change.close',c.id);return updated;});
  app.post('/api/changes/:id/reopen',async(req:any)=>{const c=entity(req,'changes',req.params.id,true);if(c.status!=='closed')throw Error('Only closed change requests can be reopened');const updated=put('changes',{id:c.id,status:'open',reopenedBy:user(req).id,reopenedAt:new Date().toISOString()});audit(user(req).id,'change.reopen',c.id);return updated;});
  app.delete('/api/changes/:id',async(req:any)=>{const c=entity(req,'changes',req.params.id,true);const u=user(req);if(!admin(u)&&c.authorId!==u.id)throw Error('Only administrators or the author can delete a change request');del('changes',c.id);for(const item of all('comments').filter(x=>x.changeId===c.id))del('comments',item.id);for(const item of all('reviews').filter(x=>x.changeId===c.id))del('reviews',item.id);for(const item of all('checks').filter(x=>x.changeId===c.id))del('checks',item.id);audit(u.id,'change.delete',c.id);return {ok:true,id:c.id};});
- app.post('/api/changes/:id/comment',(req:any)=>{const c=entity(req,'changes',req.params.id,true);const b=body(req,z.object({text:str,file:z.string().optional(),line:z.number().int().positive().optional(),images:z.array(imageSchema).optional(),attachments:z.array(attachmentSchema).optional()}));const comment=put('comments',{...b,changeId:c.id,authorId:user(req).id,author:user(req).name,sourceSha:c.sourceSha});emitAutomation('comment',c,comment.id);return comment});
+ app.post('/api/changes/:id/comment',async(req:any)=>{const c=entity(req,'changes',req.params.id,true);const b=body(req,z.object({text:str,file:z.string().min(1).max(4096).optional(),path:z.string().min(1).max(4096).optional(),line:z.number().int().positive().optional(),side:z.enum(['old','new']).optional(),sourceSha:z.string().optional(),targetSha:z.string().optional(),images:z.array(imageSchema).optional(),attachments:z.array(attachmentSchema).optional()}));
+  if(b.path&&b.file&&b.path!==b.file)throw Error('Comment paths do not match');
+  const file=b.path||b.file;
+  if(Boolean(file)!==Boolean(b.line))throw Error('Inline comments require both a file and line');
+  if((b.side||b.sourceSha||b.targetSha)&&!file)throw Error('Revision anchors require an inline comment');
+  if(file){
+   const sourceSha=await revision(get('repos',c.repoId)!,c.source),targetSha=await revision(get('repos',c.repoId)!,c.target);
+   if(sourceSha!==c.sourceSha||targetSha!==c.targetSha||(b.sourceSha&&b.sourceSha!==sourceSha)||(b.targetSha&&b.targetSha!==targetSha))throw Error('Change revisions changed. Refresh before commenting.');
+   const diff=await structuredChangeFileDiff(c,file,{includeHidden:true});
+   const side=b.side||'new';
+   if(!diff.hunks.some(h=>h.lines.some(l=>(side==='old'?l.oldLine:l.newLine)===b.line)))throw Error('Comment line is not present on this side of the diff');
+  }
+  const comment=put('comments',{...b,...(file?{file,path:file,side:b.side||'new',targetSha:c.targetSha}:{}),changeId:c.id,projectId:c.projectId,authorId:user(req).id,author:user(req).name,sourceSha:c.sourceSha});emitAutomation('comment',c,comment.id);return comment});
  app.post('/api/changes/:id/review',async(req:any)=>{const c=entity(req,'changes',req.params.id,true);const b=body(req,z.object({body:str,verdict:z.enum(['approved','changes_requested','commented'])}));const review=put('reviews',{...b,changeId:c.id,authorId:user(req).id,sourceSha:c.sourceSha,targetSha:c.targetSha,ai:false});await maybeAutoMerge(c.id);return review;});
  app.post('/api/jobs',req=>{const b=body(req,z.object({repoId:id,changeId:optId,agentId:optId,title:str.optional(),prompt:str,kind:kind.optional(),autonomy:optMode,connectionId:z.string().optional(),model:z.string().optional(),thinkingLevel:optThinking,targetBranch:z.string().optional(),sourceBranch:z.string().optional(),images:z.array(imageSchema).optional(),attachments:z.array(attachmentSchema).optional()}));return enqueue({...b,changeId:b.changeId||undefined,agentId:b.agentId||undefined,autonomy:b.autonomy||undefined,thinkingLevel:b.thinkingLevel||undefined},user(req));});
  app.get('/api/jobs/:id',(req:any)=>{const j=entity(req,'jobs',req.params.id);return {...j,events:events(j.id),checks:all('checks').filter(x=>x.jobId===j.id)};});
@@ -249,8 +320,8 @@ export async function createApp(){const app=Fastify({logger:false,forceCloseConn
  app.delete('/api/invites/:id',(req:any)=>{needAdmin(req);del('invites',req.params.id);return {ok:true}});
  app.delete('/api/devices/:id',(req:any)=>{const d=get('devices',req.params.id);if(d?.userId!==user(req).id)needAdmin(req);del('devices',req.params.id);return {ok:true}});
  app.patch('/api/users/:id',(req:any)=>{needAdmin(req);const b=body(req,z.object({role:z.enum(['owner','admin','operator','viewer']).optional(),projects:z.array(id).optional(),disabled:z.boolean().optional()}));const target=get('users',req.params.id);if(!target)throw Error('User not found');if((target.role==='owner'||b.role==='owner')&&user(req).role!=='owner')throw Error('Only an owner can manage owners');if(target.role==='owner'&&(b.disabled||b.role&&b.role!=='owner')&&all('users').filter(u=>u.role==='owner'&&!u.disabled).length===1)throw Error('Keep at least one active owner');return put('users',{id:target.id,...b});});
- app.post('/api/resources',req=>{const b=body(req,z.object({projectId:id,name:str,kind:z.enum(['prompt','skill','extension']),content:z.string().min(1).max(200000),parentId:id.optional()}));entity(req,'projects',b.projectId,true);return put('resources',{...b,authorId:user(req).id,active:false,version:all('resources').filter(r=>r.projectId===b.projectId&&r.name===b.name).length+1});});
- app.post('/api/resources/:id/activate',async(req:any)=>{const r=entity(req,'resources',req.params.id,true);if(r.kind==='extension')needAdmin(req);if(r.kind==='extension'){const parsed=ts.transpileModule(r.content,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ESNext},reportDiagnostics:true});if(parsed.diagnostics?.some(d=>d.category===ts.DiagnosticCategory.Error))throw Error('Extension has TypeScript syntax errors. Fix the draft before activation.');await mkdir(join(dataDir,'extensions'),{recursive:true});const path=join(dataDir,'extensions',`${r.id}.ts`);await writeFile(path,r.content,{mode:0o600});put('resources',{id:r.id,path});}for(const old of all('resources').filter(x=>x.projectId===r.projectId&&x.name===r.name))put('resources',{id:old.id,active:false});audit(user(req).id,'resource.activate',r.id);return put('resources',{id:r.id,active:true});});
+ app.post('/api/resources',req=>{const b=body(req,z.object({projectId:id.optional(),name:str,kind:z.enum(['prompt','skill','extension']),content:z.string().min(1).max(200000),parentId:id.optional()}));if(b.projectId)entity(req,'projects',b.projectId,true);else needAdmin(req);return put('resources',{...b,authorId:user(req).id,active:false,version:all('resources').filter(r=>(r.projectId||undefined)===(b.projectId||undefined)&&r.name===b.name).length+1});});
+ app.post('/api/resources/:id/activate',async(req:any)=>{const r=entity(req,'resources',req.params.id,true);if(r.kind==='extension'||!r.projectId)needAdmin(req);if(r.kind==='extension'){const parsed=ts.transpileModule(r.content,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ESNext},reportDiagnostics:true});if(parsed.diagnostics?.some(d=>d.category===ts.DiagnosticCategory.Error))throw Error('Extension has TypeScript syntax errors. Fix the draft before activation.');await mkdir(join(dataDir,'extensions'),{recursive:true});const path=join(dataDir,'extensions',`${r.id}.ts`);await writeFile(path,r.content,{mode:0o600});put('resources',{id:r.id,path});}for(const old of all('resources').filter(x=>(x.projectId||undefined)===(r.projectId||undefined)&&x.name===r.name))put('resources',{id:old.id,active:false});audit(user(req).id,'resource.activate',r.id);return put('resources',{id:r.id,active:true});});
  app.get('/api/self',req=>{needAdmin(req);return {repo:all('repos').find(r=>r.self),deployments:all('releases')};});
  app.post('/api/self/register',async req=>{needAdmin(req);return registerSelf()});
  app.post('/api/self/build',async req=>{needAdmin(req);const b=body(req,z.object({changeId:id}));return prepareDeployment(b.changeId,user(req).id)});
@@ -262,6 +333,9 @@ export async function createApp(){const app=Fastify({logger:false,forceCloseConn
  app.patch('/api/admin/threads/:id',async(req:any)=>{needAdmin(req);adminThread(req.params.id,user(req).id);const b=z.object({permissionMode:z.enum(['manual','yolo'])}).parse(req.body);audit(user(req).id,'admin.mode.'+b.permissionMode,req.params.id);return put('adminThreads',{id:req.params.id,...b});});
  app.get('/api/admin/threads/:id',(req:any)=>{needAdmin(req);return adminThread(req.params.id,user(req).id)});
  app.post('/api/admin/threads/:id/messages',(req:any)=>{needAdmin(req);return startAdminTurn(req.params.id,user(req).id,req.body)});
+ app.patch('/api/admin/threads/:id/messages/:messageId',async(req:any)=>{needAdmin(req);const b=body(req,z.object({text:z.string().min(1).max(50000)}));return editAdminMessage(req.params.id,req.params.messageId,user(req).id,b.text);});
+ app.delete('/api/admin/threads/:id/messages/:messageId',(req:any)=>{needAdmin(req);return deleteAdminMessage(req.params.id,req.params.messageId,user(req).id);});
+ app.post('/api/admin/threads/:id/fork',async(req:any)=>{needAdmin(req);const b=body(req,z.object({title:z.string().optional(),messageId:z.string().optional()}).default({}));return forkAdminThread(req.params.id,user(req).id,b);});
  app.post('/api/admin/threads/:id/stop',(req:any)=>{needAdmin(req);return stopAdminTurn(req.params.id,user(req).id)});
  app.delete('/api/admin/threads/:id',(req:any)=>{needAdmin(req);return deleteAdminThread(req.params.id,user(req).id);});
  app.post('/api/admin/actions',req=>{needAdmin(req);const b=body(req,z.object({reason:str,action:z.unknown()}));return proposeAction(user(req).id,b.reason,b.action)});

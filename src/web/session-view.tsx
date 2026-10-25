@@ -168,7 +168,7 @@ export function DiffBlock({diff}:{diff?:string}){
 }
 
 export function SessionView({id}:{id:string}){
- const {state,go,notify,refresh,run,canEdit}=useWorkspace();
+ const {state,go,setProject,notify,refresh,run,canEdit,isAdmin}=useWorkspace();
  const [item,setItem]=useState<Item|null>(null);
  const [events,setEvents]=useState<any[]>([]);
  const [tab,setTab]=useState('conversation');
@@ -311,7 +311,7 @@ export function SessionView({id}:{id:string}){
    const target=transcript.slice().reverse().find(t=>t.type==='tool'&&(toolId?t.toolId===toolId:true));
    if(target){
     if(e.data?.args)target.args=e.data.args;
-    target.partialUpdate=e.data?.partialResult||(target.partialUpdate||'')+(typeof e.data?.update==='string'?e.data.update:JSON.stringify(e.data?.update||''));
+    target.partialUpdate=(e.data?.partialResult?formatToolData(e.data.partialResult):'')||(target.partialUpdate||'')+(typeof e.data?.update==='string'?e.data.update:JSON.stringify(e.data?.update||''));
    }
   }else if(e.type==='tool_result'){
    const toolId=e.data?.id||e.data?.callId||e.data?.toolCallId;
@@ -399,10 +399,11 @@ export function SessionView({id}:{id:string}){
      </div>
 
      <div className="session-actions">
+      {!item.changeId&&item.projectThreadId&&<button type="button" className="btn btn-sm" onClick={()=>{setProject(item.projectId);go('home');}}>Project conversation</button>}
       {item.changeId&&(
-       <button type="button" className="btn btn-sm" onClick={()=>go('changes',item.changeId)} title="Open linked change request">
+       <button type="button" className="btn btn-sm" onClick={()=>go('changes',item.changeId)} title="Discuss the change in its shared project-level conversation">
         <GitPullRequest size={13}/>
-        <span>CR #{short(item.changeId)}</span>
+        <span>Change conversation</span>
        </button>
       )}
       {canEdit&&(
@@ -576,12 +577,39 @@ export function SessionView({id}:{id:string}){
       </article>
 
       {/* Streamed events */}
-      {transcript.filter((e,idx)=>{
-       if(['usage','status','session','final_text'].includes(e.type))return false;
+      {transcript.filter((e)=>{
+       if(['usage','status','session','final_text','action_decided'].includes(e.type))return false;
        // Avoid duplicating the initial prompt event logged at job creation
-       if(e.type==='user'&&idx===0&&e.data?.mode==='prompt')return false;
+       if(e.type==='user'&&(e.data?.mode==='prompt'||e.data?.text?.trim()===item.prompt?.trim()))return false;
        return true;
       }).map((e,i)=>{
+       if(e.type==='action_proposed'){
+        const isDecided=transcript.some(x=>x.type==='action_decided'&&x.data?.actionId===e.data?.actionId);
+        return (
+         <div key={i} className="card padded" style={{margin:'12px 0',borderColor:'var(--accent)',background:'var(--accent-dim)'}}>
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',gap:12,flexWrap:'wrap'}}>
+           <div>
+            <div style={{fontWeight:600,color:'var(--accent)',display:'flex',alignItems:'center',gap:6}}>
+             <Terminal size={15}/>
+             <span>Host Terminal Command Approval Required</span>
+            </div>
+            <div style={{margin:'6px 0 4px'}}><code style={{background:'rgba(0,0,0,0.2)',padding:'2px 6px',borderRadius:4}}>{e.data?.command}</code></div>
+            {e.data?.reason&&<p className="muted" style={{fontSize:13,margin:0}}>Reason: {e.data.reason}</p>}
+           </div>
+           {isAdmin&&!isDecided&&item.status==='running'&&(
+            <div style={{display:'flex',gap:8}}>
+             <button type="button" className="btn btn-sm btn-primary" onClick={()=>void api(`/admin/actions/${e.data?.actionId}/decision`,'POST',{decision:'approve'})}>
+              Approve
+             </button>
+             <button type="button" className="btn btn-sm" onClick={()=>void api(`/admin/actions/${e.data?.actionId}/decision`,'POST',{decision:'reject'})}>
+              Reject
+             </button>
+            </div>
+           )}
+          </div>
+         </div>
+        );
+       }
        if(e.type==='user'){
         return (
          <article key={i} className="turn turn-user">
@@ -632,7 +660,7 @@ export function SessionView({id}:{id:string}){
            {e.partialUpdate&&!e.result&&(
             <div>
              <div className="trace-section-label">Live output</div>
-             <pre>{e.partialUpdate}</pre>
+             <pre>{formatToolData(e.partialUpdate)}</pre>
             </div>
            )}
            {e.result!==undefined&&(
@@ -673,7 +701,7 @@ export function SessionView({id}:{id:string}){
             </button>
            )}
           </header>
-          <Markdown>{e.data}</Markdown>
+          <Markdown>{typeof e.data==='string'?e.data:formatToolData(e.data)}</Markdown>
          </article>
         );
        }

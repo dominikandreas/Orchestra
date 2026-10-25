@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {mkdtemp,writeFile,readFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
+process.env.NODE_ENV='test';
 const dir=await mkdtemp(join(tmpdir(),'relay-test-'));process.env.RELAY_DATA_DIR=join(dir,'data');
 const store=await import('../src/server/store.js');const git=await import('../src/server/git.js');const {createApp}=await import('../src/server/app.js');const {enqueue}=await import('../src/server/jobs.js');
 let app:any,owner:any,project:any,repo:any,ownerToken:string,viewerToken:string,otherToken:string;

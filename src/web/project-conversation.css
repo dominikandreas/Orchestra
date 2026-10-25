@@ -1,0 +1,17 @@
+.project-conversation select,.change-pipeline-controls select{font:inherit;color:var(--text);background:var(--bg-elevated);border:1px solid var(--line);border-radius:6px;padding:7px 10px;min-height:32px;color-scheme:dark;max-width:100%}
+:root[data-theme="light"] .project-conversation select,:root[data-theme="light"] .change-pipeline-controls select{color-scheme:light}
+.project-conversation .composer-toolbar{gap:12px;align-items:center}
+.project-conversation .composer-toolbar label{display:flex;align-items:center;gap:8px;font-size:12px}
+.project-conversation .composer-toolbar>.btn:last-child{margin-left:auto}
+.project-conversation .conversation-message>strong{font-size:11px;color:var(--text-secondary)}
+.project-conversation .conversation-message.message-user{background:var(--bg-hover)}
+.project-conversation .conversation-jobs{display:flex;flex-wrap:wrap;gap:8px;padding:12px 0}
+.project-conversation .conversation-jobs h4{flex-basis:100%;margin:0 0 4px;font-size:12px}
+.project-conversation .conversation-run{margin:8px 0;font-size:12px}
+.project-conversation .conversation-run summary{cursor:pointer;color:var(--text-secondary);padding:6px 0}
+.project-conversation .conversation-run pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:300px;overflow:auto}
+.project-conversation .section-head{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.project-conversation .section-head h3{margin:0;font-size:14px}
+.project-conversation .section-head p{font-size:12px;margin:6px 0}
+.project-conversation .conversation-message{overflow-wrap:anywhere}
+@media(max-width:600px){.project-conversation .composer-toolbar label{width:100%}.project-conversation .composer-toolbar select{flex:1;min-width:0}.project-conversation .composer-toolbar>.btn:last-child{margin-left:0}}

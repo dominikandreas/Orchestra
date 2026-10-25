@@ -53,3 +53,98 @@ test('revoked author action can still be rejected by an active administrator',as
  const res=await control.decideAction(c.id,'reject',owner.id);
  assert.equal(res.status,'rejected');
 });
+
+test('follow-up prompts preserve exact chronological order of user prompt and assistant response',async()=>{
+ const thread=agent.createAdminThread(owner.id);
+ // First turn
+ const run1=agent.startAdminTurn(thread.id,owner.id,{message:'Initial prompt 1',connectionId:connection.id,model:'fixture'});
+ for(let n=0;n<500;n++){if(s.get('adminRuns',run1.id)?.status!=='running')break;await new Promise(r=>setTimeout(r,20));}
+ assert.equal(s.get('adminRuns',run1.id)?.status,'completed');
+
+ // Follow-up turn
+ const run2=agent.startAdminTurn(thread.id,owner.id,{message:'Follow-up prompt 2',connectionId:connection.id,model:'fixture'});
+ for(let n=0;n<500;n++){if(s.get('adminRuns',run2.id)?.status!=='running')break;await new Promise(r=>setTimeout(r,20));}
+ assert.equal(s.get('adminRuns',run2.id)?.status,'completed');
+
+ const t=agent.adminThread(thread.id,owner.id);
+ assert.equal(t.messages.length,4);
+ assert.equal(t.messages[0].role,'user');
+ assert.equal(t.messages[0].text,'Initial prompt 1');
+ assert.equal(t.messages[1].role,'assistant');
+ assert.equal(t.messages[2].role,'user');
+ assert.equal(t.messages[2].text,'Follow-up prompt 2');
+ assert.equal(t.messages[3].role,'assistant');
+});
+
+test('messages can be edited and deleted in assistant session',async()=>{
+ const thread=agent.createAdminThread(owner.id);
+ const msg=s.put('adminMessages',{threadId:thread.id,role:'user',text:'Original text'});
+ 
+ // Edit message
+ const editRes=await request('PATCH',`/api/admin/threads/${thread.id}/messages/${msg.id}`,ownerToken,{text:'Edited text'});
+ assert.equal(editRes.statusCode,200);
+ assert.equal(s.get('adminMessages',msg.id)?.text,'Edited text');
+
+ // Delete message
+ const delRes=await request('DELETE',`/api/admin/threads/${thread.id}/messages/${msg.id}`,ownerToken);
+ assert.equal(delRes.statusCode,200);
+ assert.equal(s.get('adminMessages',msg.id),undefined);
+});
+
+test('sessions can be forked into separate sessions with parentThreadId and copied messages',async()=>{
+ const thread=agent.createAdminThread(owner.id);
+ s.put('adminMessages',{threadId:thread.id,role:'user',text:'Turn 1 user',created:'2026-01-01T00:00:01.000Z'});
+ s.put('adminMessages',{threadId:thread.id,role:'assistant',text:'Turn 1 assistant',created:'2026-01-01T00:00:02.000Z'});
+ const msg3=s.put('adminMessages',{threadId:thread.id,role:'user',text:'Turn 2 user',created:'2026-01-01T00:00:03.000Z'});
+ s.put('adminMessages',{threadId:thread.id,role:'assistant',text:'Turn 2 assistant',created:'2026-01-01T00:00:04.000Z'});
+
+ // Full fork
+ const forkRes=await request('POST',`/api/admin/threads/${thread.id}/fork`,ownerToken,{title:'Forked Conversation'});
+ assert.equal(forkRes.statusCode,200);
+ const forkedData=JSON.parse(forkRes.body);
+ assert.equal(forkedData.parentThreadId,thread.id);
+ assert.equal(forkedData.title,'Forked Conversation');
+ assert.equal(forkedData.messages.length,4);
+
+ // Partial fork up to Turn 2 user message
+ const partialRes=await request('POST',`/api/admin/threads/${thread.id}/fork`,ownerToken,{title:'Partial Fork',messageId:msg3.id});
+ assert.equal(partialRes.statusCode,200);
+ const partialData=JSON.parse(partialRes.body);
+ assert.equal(partialData.parentThreadId,thread.id);
+ assert.equal(partialData.title,'Partial Fork');
+ assert.equal(partialData.messages.length,3);
+ assert.equal(partialData.messages[2].text,'Turn 2 user');
+});
+
+test('sessions can use and create agent skills via admin tools',async()=>{
+ const thread=agent.createAdminThread(owner.id);
+ const run=s.put('adminRuns',{threadId:thread.id,authorId:owner.id,status:'running'});
+ const tools=agent.adminTools(run,{connectionId:connection.id,model:'fixture'});
+
+ const createSkillTool=tools.find(t=>t.name==='create_skill')!;
+ assert.ok(createSkillTool);
+
+ // Create a skill
+ const createResult=await createSkillTool.execute('call_create_skill',{
+  name:'deploy-verification',
+  description:'Verifies container and HTTP endpoints before signoff',
+  content:'1. Check docker ps\n2. Verify health endpoint\n3. Confirm SSL status'
+ });
+ const parsed=JSON.parse(createResult.content[0].text);
+ assert.equal(parsed.ok,true);
+ assert.equal(parsed.skill.name,'deploy-verification');
+ assert.equal(parsed.skill.active,true);
+
+ // List skills
+ const listSkillTool=tools.find(t=>t.name==='list_skills')!;
+ const listResult=await listSkillTool.execute('call_list_skills',{});
+ const listed=JSON.parse(listResult.content[0].text);
+ assert.ok(listed.some((s:any)=>s.name==='deploy-verification'));
+
+ // Use skill
+ const useSkillTool=tools.find(t=>t.name==='use_skill')!;
+ const useResult=await useSkillTool.execute('call_use_skill',{nameOrId:'deploy-verification'});
+ const used=JSON.parse(useResult.content[0].text);
+ assert.equal(used.name,'deploy-verification');
+ assert.ok(used.content.includes('Check docker ps'));
+});

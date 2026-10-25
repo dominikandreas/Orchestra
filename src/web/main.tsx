@@ -13,8 +13,9 @@ import {api,token,label,cx,activeStatuses,attentionStatuses,type Item} from './l
 import {WorkspaceContext,Dot,Spinner} from './ui';
 import {SessionView} from './session-view';
 import {ChangeView} from './change-view';
+import {ProjectWorkspace} from './project-workspace';
 import {
- HomePage,SessionsPage,ChangesPage,AgentsPage,AutomationsPage,
+ SessionsPage,ChangesPage,AgentsPage,AutomationsPage,
  DeploymentsPage,RepositoriesPage,SettingsPage,WelcomeScreen,
  NewSessionModal,AgentModal,WorkflowModal,NewDeploymentModal,
  NewRepoModal,ConfigureRepoModal,ProjectModal,SearchCommandModal
@@ -27,7 +28,7 @@ function App(){
  const [loading,setLoading]=useState(true);
  const [state,setState]=useState<Item>({
   projects:[],repos:[],changes:[],jobs:[],workflows:[],
-  connections:[],deployments:[],previews:[],resources:[],agents:[],threads:[]
+  connections:[],deployments:[],previews:[],resources:[],agents:[],threads:[],mcpServers:[]
  });
  const [catalog,setCatalog]=useState<Item[]>([]);
  const [page,setPageState]=useState(initialRoute.page);
@@ -111,15 +112,15 @@ function App(){
  },[]);
 
  const go=useCallback((nextPage:string,nextId:string|null=null,nextQuery:Record<string,string>={})=>{
-  if(nextPage==='sessions'&&nextId){
-   const target=state.jobs?.find((j:Item)=>j.id===nextId);
+  if((nextPage==='sessions'||nextPage==='changes')&&nextId){
+   const target=(nextPage==='sessions'?state.jobs:state.changes)?.find((j:Item)=>j.id===nextId);
    if(target&&target.projectId&&projectRef.current!=='all'&&target.projectId!==projectRef.current){
     navigate(nextPage,nextId,target.projectId,nextQuery);
     return;
    }
   }
   navigate(nextPage,nextId,projectRef.current,nextQuery);
- },[navigate,state.jobs]);
+ },[navigate,state.jobs,state.changes]);
 
  const setProject=useCallback((nextProject:string)=>{
   navigate(pageRef.current,idRef.current,nextProject);
@@ -366,7 +367,7 @@ function App(){
 
      <nav className="sidebar-nav">
       {[
-       {id:'home',name:'Home',icon:LayoutDashboard},
+       {id:'home',name:project==='all'?'Projects':'Project',icon:LayoutDashboard},
        {id:'sessions',name:'Sessions',icon:Sparkles,count:ongoingSessions.length||(otherOngoingJobs.length?otherOngoingJobs.length:undefined)},
        {id:'changes',name:'Changes',icon:GitPullRequest,count:openChangesCount||undefined},
        {id:'agents',name:'Agents',icon:Bot,count:visibleAgents.length||undefined},
@@ -560,7 +561,7 @@ function App(){
        reloading={reloading}
       />
      ):page==='home'?(
-      <HomePage onNewRepo={()=>openNewRepo()}/>
+      <ProjectWorkspace onNewRepo={()=>openNewRepo()} onNewProject={openNewProject}/>
      ):page==='sessions'?(
       <SessionsPage initialFilter={routeQuery.filter} onNewSession={()=>openNewSession()}/>
      ):page==='changes'?(
@@ -595,7 +596,7 @@ function App(){
      ):page==='settings'?(
       <SettingsPage onTriggerReload={triggerReload} reloading={reloading}/>
      ):(
-      <HomePage onNewRepo={()=>openNewRepo()}/>
+      <ProjectWorkspace onNewRepo={()=>openNewRepo()} onNewProject={openNewProject}/>
      )}
     </main>
 

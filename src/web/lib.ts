@@ -41,7 +41,8 @@ export const jobKinds=[
  {value:'test',label:'Run tests'},
  {value:'coverage',label:'Improve coverage'},
  {value:'improve',label:'Improve'},
- {value:'adapt',label:'Adapt agents'}
+ {value:'adapt',label:'Adapt agents'},
+ {value:'system',label:'System'}
 ];
 export const kindLabel=(v?:string)=>jobKinds.find(k=>k.value===v)?.label||label(v);
 

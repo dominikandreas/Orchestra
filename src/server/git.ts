@@ -1,4 +1,8 @@
 import { spawn } from 'node:child_process';
+import { gitOutput, GitCommandError } from './git-process.js';
+import { rawChangeDiff } from './structured-diff.js';
+export { structuredDiff, structuredFileDiff, structuredChangeDiff, structuredChangeFileDiff } from './structured-diff.js';
+export { ensureProjectKnowledge, projectKnowledge, saveProjectKnowledge } from './project-metadata.js';
 import { mkdir, realpath, rm, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
@@ -171,20 +175,32 @@ export async function repoCommits(repo:Row,ref?:string,limit=30){
  });
 }
 export async function revision(repo:Row,branch:string){if(branch.startsWith('-')||branch.includes('..'))throw Error('Invalid branch');return git(repo.path,'rev-parse','--verify',`refs/heads/${branch}^{commit}`);}
-export async function createWorktree(repo:Row,id:string,base:string){
+export function worktreeBranchName(id:string,title?:string){
+ if(!/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,159}$/.test(id))throw Error('Invalid worktree id');
+ const slug=title?.normalize('NFKD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'').slice(0,60).replace(/-$/,'');
+ return `relay/${slug?`${slug}-${id}`:id}`;
+}
+export async function createWorktree(repo:Row,id:string,base:string,title?:string){
+ const branch=worktreeBranchName(id,title);
  const path=join(dataDir,'worktrees',id);
  if(existsSync(path)){
   await rm(path,{recursive:true,force:true}).catch(()=>{});
   await git(repo.path,'worktree','prune').catch(()=>{});
-  await git(repo.path,'branch','-D',`relay/${id}`).catch(()=>{});
+  await git(repo.path,'branch','-D',branch).catch(()=>{});
  }
  await mkdir(join(dataDir,'worktrees'),{recursive:true});
- await git(repo.path,'worktree','add','-b',`relay/${id}`,path,base);
+ await git(repo.path,'worktree','add','-b',branch,path,base);
  return path;
 }
 export async function createChange(repo:Row,source:string,target:string,title:string,authorId:string){if(source===target)throw Error('Choose different source and target branches');return put('changes',{repoId:repo.id,projectId:repo.projectId,title,source,target,sourceSha:await revision(repo,source),targetSha:await revision(repo,target),status:'open',authorId});}
-export async function diffChange(c:Row){const r=get('repos',c.repoId)!;return git(r.path,'diff','--no-ext-diff',`${c.targetSha}...${c.sourceSha}`);}
-export async function refreshChange(c:Row){const r=get('repos',c.repoId)!;const sourceSha=await revision(r,c.source),targetSha=await revision(r,c.target);let conflict=false;try{await git(r.path,'merge-tree','--write-tree',targetSha,sourceSha)}catch{conflict=true}return put('changes',{...c,sourceSha,targetSha,conflict});}
+export async function diffChange(c:Row,options:{includeGenerated?:boolean}={}){return rawChangeDiff(c,options);}
+/** Exit 1 with a resulting tree is a merge conflict; missing history, unsupported Git,
+ * corrupt objects, and process failures are operational errors and must propagate. */
+export async function mergeConflict(repo:Row,targetSha:string,sourceSha:string){
+ try{await gitOutput(repo.path,['merge-tree','--write-tree',targetSha,sourceSha]);return false;}
+ catch(e){if(e instanceof GitCommandError&&e.code===1&&/^[0-9a-f]{40,64}\r?\n/.test(e.stdout))return true;throw e;}
+}
+export async function refreshChange(c:Row){const r=get('repos',c.repoId)!;const sourceSha=await revision(r,c.source),targetSha=await revision(r,c.target);const conflict=await mergeConflict(r,targetSha,sourceSha);const current=get('changes',c.id);if(!current)throw Error('Change request was deleted');if(current.sourceSha===sourceSha&&current.targetSha===targetSha&&current.conflict===conflict)return current;return put('changes',{id:c.id,sourceSha,targetSha,conflict});}
 export type MergeOptions={sourceSha:string,targetSha:string,force?:{actorId:string,reason:string}};
 export async function mergeChange(id:string,options?:MergeOptions){
  const initial=get('changes',id);if(!initial||initial.status!=='open')throw Error('Change request is not open');

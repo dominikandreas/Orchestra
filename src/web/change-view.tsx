@@ -1,16 +1,63 @@
-import React,{useState,useEffect,useCallback} from 'react';
+import React,{useState,useEffect,useCallback,useRef} from 'react';
 import {
  ArrowLeft,ArrowRight,GitBranch,GitMerge,GitPullRequest,Sparkles,
  Play,Code2,RefreshCw,Check,Shield,X,Trash2,Rocket,RotateCw,CheckCheck,AlertCircle
 } from 'lucide-react';
-import {api,ago,short,label,kindLabel,imagePayload,type Item} from './lib';
+import {api,ago,short,label,kindLabel,imagePayload,thinkingLevels,type Item} from './lib';
 import {Status,Dot,Tabs,Modal,Field,Spinner,Empty,ErrorNote,Confirm,useWorkspace,useSubmit} from './ui';
 import {Markdown} from './markdown';
 import {useAttachmentState,AttachmentInput,MessageAttachments} from './attachments';
 import {VoiceButton} from './voice';
-import {DiffBlock} from './session-view';
+import {ProjectConversation} from './project-conversation';
+import {buildModelChoices} from './composer';
+import {ChangeDiff} from './change-diff';
+import './change-workspace.css';
 
-export function ChangeView({
+export function ChangeView(props:React.ComponentProps<typeof ChangeWorkspace>){
+ return <ChangeWorkspace key={props.id} {...props}/>;
+}
+function ChangePipeline({id,repo,pipeline,open,onChange}:{id:string,repo?:Item,pipeline?:Item|null,open:boolean,onChange:()=>Promise<void>}){
+ const {state,catalog,me,canEdit,go}=useWorkspace();
+ const [fallback,setFallback]=useState<Item|null>(null);
+ const [selection,setSelection]=useState('');
+ const [thinking,setThinking]=useState<string|null>(null);
+ const [busy,setBusy]=useState(false),[error,setError]=useState('');
+ const request=useRef(0);
+ useEffect(()=>{
+  if(pipeline!==undefined)return;
+  let disposed=false;
+  const load=async()=>{const n=++request.current;try{const x=await api(`/changes/${id}/pipeline`);if(!disposed&&n===request.current)setFallback(x.pipeline);}catch(e){if(!disposed&&n===request.current)setError((e as Error).message);}};
+  void load();const timer=setInterval(load,3000);return ()=>{disposed=true;++request.current;clearInterval(timer);};
+ },[id,pipeline]);
+ const p=pipeline===undefined?fallback:pipeline;
+ const connections=(state.connections||[]).filter((c:Item)=>c.ownerId===me.id||c.shared&&c.projects?.includes(repo?.projectId));
+ const choices=buildModelChoices(connections,catalog);
+ const defaultChoice=choices.find(c=>c.connectionId===repo?.connectionId&&c.model===repo?.model);
+ const chosen=choices.find(c=>c.value===(selection||defaultChoice?.value||choices[0]?.value));
+ const act=async(stop=false)=>{
+  if(busy)return;setBusy(true);setError('');++request.current;
+  try{
+   const result=await api(`/changes/${id}/pipeline${stop?'/stop':''}`,'POST',stop?{}:{connectionId:chosen?.connectionId,model:chosen?.model,thinkingLevel:thinking??repo?.thinkingLevel??'off'});
+   ++request.current;setFallback(result.pipeline??result);await onChange();
+  }catch(e){setError((e as Error).message);}finally{setBusy(false);}
+ };
+ return <section className="change-pipeline" aria-label="Change pipeline">
+  <div className="change-pipeline-heading"><strong>Pipeline</strong><span>{p?`${label(p.status)} · ${label(p.stage)}`:'Not started'}</span>{p&&<small>Repair cycles: {p.repairCycles}/{p.maxRepairCycles}</small>}</div>
+  {p?.reason&&<p className="muted">{p.reason}</p>}
+  <ol className="change-pipeline-stages">{['design','research','implement','review','test','address'].map(stage=>{
+   const evidence=(p?.evidence||[]).filter((e:Item)=>e.runId===p?.runId&&e.stage===stage);
+   return <li key={stage}><strong>{label(stage)}</strong><span>{p?.stage===stage?`Current · ${p.status}`:evidence.length?'Evidence recorded':'Not recorded'}</span>{evidence.map((e:Item,i:number)=><details key={`${e.jobId}:${i}`}><summary>{e.status} · cycle {e.cycle}</summary><button type="button" className="btn btn-sm" onClick={()=>go('sessions',e.jobId)}>Open task evidence</button><pre>{e.error||e.result||'No artifact recorded'}</pre>{e.sourceSha&&<small>{short(e.sourceSha)} → {short(e.targetSha)}</small>}</details>)}</li>;
+  })}</ol>
+  {p?.currentJobId&&<button type="button" className="btn btn-sm" onClick={()=>go('sessions',p.currentJobId)}>Open current pipeline task</button>}
+  {canEdit&&open&&<div className="change-pipeline-controls">
+   <label>Pipeline model <select aria-label="Pipeline model" value={chosen?.value||''} disabled={busy} onChange={e=>setSelection(e.target.value)}>{!choices.length&&<option value="">Connect a model provider</option>}{choices.map(c=><option key={c.value} value={c.value}>{c.label} · {c.hint}</option>)}</select></label>
+   <label>Thinking <select aria-label="Pipeline thinking level" value={thinking??repo?.thinkingLevel??'off'} disabled={busy} onChange={e=>setThinking(e.target.value)}>{thinkingLevels.map(t=><option key={t} value={t}>{t}</option>)}</select></label>
+   {!p||['stopped','ready'].includes(p.status)?<button type="button" className="btn btn-primary btn-sm" disabled={busy||!chosen} onClick={()=>void act()}>{busy?<Spinner/>:null}{p?'Restart pipeline':'Start pipeline'}</button>:<button type="button" className="btn btn-sm" disabled={busy} onClick={()=>void act(true)}>Stop pipeline</button>}
+  </div>}
+  <ErrorNote>{error}</ErrorNote>
+ </section>;
+}
+function ChangeWorkspace({
  id,
  onStartJob,
  onTriggerReload,
@@ -23,7 +70,9 @@ export function ChangeView({
 }){
  const {me,state,go,notify,refresh,run,canEdit,isAdmin}=useWorkspace();
  const [item,setItem]=useState<Item|null>(null);
- const [tab,setTab]=useState('diff');
+ const [tab,setTab]=useState('discussion');
+ const generation=useRef(0);
+ const mounted=useRef(true);
  const [error,setError]=useState('');
  const [commentText,setCommentText]=useState('');
  const [reviewVerdict,setReviewVerdict]=useState('commented');
@@ -36,23 +85,23 @@ export function ChangeView({
  const {busy:reviewBusy,submit:submitReview}=useSubmit();
 
  const load=useCallback(async()=>{
+  const request=++generation.current;
   try{
-   const x=await api(`/changes/${id}`);
-   setItem(x);
+   const x=await api(`/changes/${id}?includeDiff=false`);
+   if(mounted.current&&request===generation.current){setItem(x);setError('');}
   }catch(e){
-   setError((e as Error).message);
+   if(mounted.current&&request===generation.current)setError((e as Error).message);
   }
  },[id]);
 
  useEffect(()=>{
-  setItem(null);
-  setTab('diff');
+  mounted.current=true;
   void load();
   const t=setInterval(load,3000);
-  return ()=>clearInterval(t);
+  return ()=>{mounted.current=false;++generation.current;clearInterval(t);};
  },[load]);
 
- if(error){
+ if(error&&!item){
   return (
    <div className="page-body">
     <button type="button" className="btn btn-sm" onClick={()=>go('changes')}><ArrowLeft size={14}/><span>Changes</span></button>
@@ -75,7 +124,7 @@ export function ChangeView({
  const canDelete=isAdmin||item.authorId===me.id;
 
  const latestByReviewer=new Map<string,Item>();
- for(const r of currentReviews)latestByReviewer.set(r.ai?'ai':r.authorId,r);
+ for(const r of [...currentReviews].sort((a:Item,b:Item)=>a.created.localeCompare(b.created)))latestByReviewer.set(r.ai?'ai':r.authorId,r);
  const allRev=[...latestByReviewer.values()];
  const humanRev=allRev.filter(r=>!r.ai);
  const humanApproved=humanRev.some(r=>r.verdict==='approved');
@@ -87,7 +136,7 @@ export function ChangeView({
  const needsTests=Boolean(repo?.testCommand&&latestCheck?.status!=='passed');
 
  return (
-  <div className="session-page">
+  <div className="session-page change-workspace">
    <header className="session-header">
     <div className="session-header-top">
      <div className="session-breadcrumb">
@@ -104,6 +153,8 @@ export function ChangeView({
      </div>
 
      <div className="session-actions">
+      {canEdit&&item.status==='open'&&<button type="button" className="btn btn-sm btn-primary" disabled={needsReview||needsTests||Boolean(item.conflict)||Boolean(item.mergeCheckError)} title="Merge uses current repository gates; branch revisions are verified by the server" onClick={()=>void run(async()=>{await api(`/changes/${id}/merge`,'POST',{});await load();},'Merged')}><GitMerge size={13}/>Merge</button>}
+      <details className="change-actions-menu"><summary className="btn btn-sm">More actions</summary><div className="change-actions-popover">
       {canEdit&&item.status==='open'&&(
        <>
         <button type="button" className="btn btn-sm" onClick={()=>onStartJob(item.repoId,id,'review')}>
@@ -137,16 +188,6 @@ export function ChangeView({
           <Check size={13}/><span>Approve</span>
          </button>
         )}
-        <button
-         type="button"
-         className="btn btn-sm btn-primary"
-         onClick={()=>void run(async()=>{
-          await api(`/changes/${id}/merge`,'POST',{});
-          await load();
-         },'Merged')}
-        >
-         <GitMerge size={13}/><span>Merge</span>
-        </button>
         {isAdmin&&(
          <button type="button" className="btn btn-sm" onClick={()=>setForceModal(true)}>
           <Shield size={13}/><span>Force merge</span>
@@ -181,6 +222,7 @@ export function ChangeView({
         <Trash2 size={14}/>
        </button>
       )}
+      </div></details>
      </div>
     </div>
 
@@ -213,24 +255,23 @@ export function ChangeView({
     {item.status==='open'&&(
      <div className="gate-strip">
       <span>Revisions: <code>{short(item.sourceSha)}</code> → <code>{short(item.targetSha)}</code></span>
-      <span className={needsReview?'tone-warn-text':'tone-ok-text'}>
-       {needsReview?(pendingChanges?'Review: changes requested':'Review: awaiting approval'):'Review: ready'}
+      <span className={needsReview?'tone-warn-text':approved?'tone-ok-text':''}>
+       {pendingChanges?'Review: changes requested':approved?'Review: approved':repo?.requireReview?'Review: awaiting approval':'Review: no approval recorded (optional)'}
       </span>
-      {repo?.testCommand&&(
-       <span className={needsTests?'tone-warn-text':'tone-ok-text'}>
-        {needsTests?`Checks: ${latestCheck?.status||'not run'}`:'Checks: passed'}
-       </span>
-      )}
+      <span className={needsTests?'tone-warn-text':''}>Tests: {latestCheck?.status||'not run'}{!repo?.testCommand?' · no command configured':''}</span>
+      <span>Merge: {item.mergeCheckError?'verification unavailable':item.conflict?'blocked by conflicts':needsReview||needsTests?'waiting on required gates':'eligible · revisions verified on merge'}</span>
+      {item.mergeCheckError&&<span className="tone-warn-text">{item.mergeCheckError}</span>}
       {item.conflict&&<span className="tone-bad-text"><AlertCircle size={12}/> Merge conflict</span>}
      </div>
     )}
 
+    <ChangePipeline id={id} repo={repo} pipeline={item.pipeline} open={item.status==='open'} onChange={load}/>
     <Tabs
      value={tab}
      onChange={setTab}
      tabs={[
-      {id:'diff',label:'Diff'},
-      {id:'discussion',label:'Discussion',count:(item.comments?.length||0)+linkedJobs.length},
+      {id:'discussion',label:'Conversation',count:item.comments?.length||0},
+      {id:'diff',label:'Changes'},
       {id:'reviews',label:'Reviews',count:item.reviews?.length||0},
       {id:'checks',label:'Checks',count:item.checks?.length||0}
      ]}
@@ -238,43 +279,28 @@ export function ChangeView({
    </header>
 
    <div className="page-body">
-    {tab==='diff'&&(
-     <div className="card">
-      <DiffBlock diff={item.diff}/>
-     </div>
-    )}
+    <ErrorNote>{error}</ErrorNote>
+    <div hidden={tab!=='diff'}>
+     <ChangeDiff key={id} id={id} active={tab==='diff'} sourceSha={item.sourceSha} targetSha={item.targetSha} comments={item.comments||[]} canEdit={canEdit} onComment={load}/>
+    </div>
 
-    {tab==='discussion'&&(
-     <div className="stack-md">
-      {linkedJobs.length>0&&(
-       <section className="card padded">
-        <h3 className="section-title"><Sparkles size={14}/><span>Linked Sessions ({linkedJobs.length})</span></h3>
-        <div className="stack-sm">
-         {linkedJobs.map((j:Item)=>(
-          <button key={j.id} type="button" className="row-item" onClick={()=>go('sessions',j.id)}>
-           <Dot status={j.status}/>
-           <div className="row-main">
-            <strong>{j.title}</strong>
-            <small>{kindLabel(j.kind)} · {ago(j.created)}{j.model?` · ${j.model}`:''}</small>
-           </div>
-           <Status value={j.status}/>
-           <ArrowRight size={13}/>
-          </button>
-         ))}
-        </div>
-       </section>
-      )}
-
+     <div className="stack-md" hidden={tab!=='discussion'}>
+      <ProjectConversation projectId={item.projectId||repo?.projectId} changeId={id}/>
+      <details className="card padded change-task-evidence"><summary>Task evidence ({linkedJobs.length})</summary>
+       <p className="muted">Execution transcripts are supporting evidence, not separate change conversations.</p>
+       {linkedJobs.map((j:Item)=><details key={j.id}><summary>{j.title} · {kindLabel(j.kind)} · <Status value={j.status}/></summary><p>{j.error||j.summary||'Open the task for its transcript and artifacts.'}</p><button type="button" className="btn btn-sm" onClick={()=>go('sessions',j.id)}>Open task evidence <ArrowRight size={13}/></button></details>)}
+      </details>
       <section className="card padded stack-md">
-       <h3 className="section-title">Comments ({item.comments?.length||0})</h3>
+       <h3 className="section-title">Review notes ({item.comments?.length||0})</h3>
        {item.comments?.length?(
         <div className="stack-sm">
          {item.comments.map((c:Item)=>(
           <article key={c.id} className="turn turn-user">
            <header className="turn-meta">
             <span className="turn-author">{c.author}</span>
-            <span className="turn-time">{ago(c.created)}{c.sourceSha!==item.sourceSha?' · earlier revision':''}</span>
+            <span className="turn-time">{ago(c.created)}{c.sourceSha!==item.sourceSha||c.targetSha&&c.targetSha!==item.targetSha?' · earlier revision':''}</span>
            </header>
+           {(c.path||c.file)&&<button type="button" className="change-comment-location" onClick={()=>setTab('diff')}>{c.path||c.file}{c.line?`:${c.line}`:''} · {c.side||'new'} side</button>}
            <Markdown>{c.text}</Markdown>
            <MessageAttachments images={c.images} attachments={c.attachments}/>
           </article>
@@ -342,7 +368,6 @@ export function ChangeView({
        )}
       </section>
      </div>
-    )}
 
     {tab==='reviews'&&(
      <div className="stack-md">

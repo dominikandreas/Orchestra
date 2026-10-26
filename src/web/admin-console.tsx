@@ -3,13 +3,13 @@ import {
  MessageSquare, X, Plus, Send, Square, Sparkles, Shield, Package,
  ChevronRight, ChevronDown, Loader2, ExternalLink, Terminal, Check, AlertCircle, Brain,
  Trash2, Search, SlidersHorizontal, ArrowLeft, RotateCw, CheckCircle2, Zap,
- GitFork, Pencil, BookOpen, Copy, Minimize2, Hash
+ GitFork, Pencil, BookOpen, Copy, Minimize2, Hash, PanelLeftClose, PanelLeftOpen
 } from 'lucide-react';
 import { useAttachmentState, AttachmentInput, MessageAttachments } from './attachments.js';
 import { isSubagent, SubagentCard, getSubagentActivityText, parseSubagentInfo, formatToolData } from './subagent.js';
 import { Markdown } from './markdown.js';
 import { VoiceButton } from './voice.js';
-import { thinkingLevels, thinkingLabel, ago, short, type Item } from './lib.js';
+import { thinkingLevels, thinkingLabel, ago, short, cx, type Item } from './lib.js';
 import { ThinkingBlock } from './session-view.js';
 import { Status, Dot, Modal, Confirm } from './ui.js';
 
@@ -109,6 +109,7 @@ export function SystemAssistantPage({
  onSelectThread?: (id: string | null) => void;
 }) {
  const [tab, setTab] = useState<'chat' | 'skills' | 'approvals' | 'plugins' | 'work'>('chat');
+ const [sidebarOpen, setSidebarOpen] = useState(true);
  const [data, setData] = useState<Item>({ threads: [], runs: [], actions: [], plugins: [], selfJobs: [], deployments: [], skills: [] });
  const [thread, setThread] = useState(initialThreadId || '');
  const [chat, setChat] = useState<Item>({ messages: [], runs: [] });
@@ -833,26 +834,60 @@ export function SystemAssistantPage({
 
     {thinkingText && <ThinkingBlock text={thinkingText} isLive={r.status === 'running'} defaultOpen={r.status === 'running'}/>}
 
-    {correlatedTools.map((tool, idx) => {
-     if (isSubagent(tool.name, tool.args)) {
-      return (
-       <SubagentCard
-        key={tool.toolCallId || idx}
-        tool={tool}
-        isRunning={!tool.result && r.status === 'running'}
-        formatToolData={formatToolData}
-       />
-      );
-     }
-     return (
-      <div key={tool.toolCallId || idx} className="admin-tool-pill">
-       <Terminal size={12}/>
-       <code>{tool.name}</code>
-       {tool.args?.command && <small className="muted-meta">{tool.args.command}</small>}
-       {tool.result && <Check size={11} className="tone-ok-text"/>}
-      </div>
-     );
-    })}
+    {correlatedTools.length > 0 && (
+     correlatedTools.length <= 2 ? (
+      correlatedTools.map((tool, idx) => {
+       if (isSubagent(tool.name, tool.args)) {
+        return (
+         <SubagentCard
+          key={tool.toolCallId || idx}
+          tool={tool}
+          isRunning={!tool.result && r.status === 'running'}
+          formatToolData={formatToolData}
+         />
+        );
+       }
+       return (
+        <div key={tool.toolCallId || idx} className="admin-tool-pill">
+         <Terminal size={11}/>
+         <code>{tool.name}</code>
+         {tool.args?.command && <small className="muted-meta">{tool.args.command}</small>}
+         {tool.result && <Check size={11} className="tone-ok-text"/>}
+        </div>
+       );
+      })
+     ) : (
+      <details className="assistant-tools-disclosure" open={r.status === 'running' ? true : undefined}>
+       <summary className="assistant-tools-summary">
+        <Terminal size={12}/>
+        <span>Used {correlatedTools.length} tools ({correlatedTools.map(t => t.name).filter((v, i, a) => a.indexOf(v) === i).join(', ')})</span>
+        <ChevronDown size={11} className="disclosure-chevron"/>
+       </summary>
+       <div className="assistant-tools-list">
+        {correlatedTools.map((tool, idx) => {
+         if (isSubagent(tool.name, tool.args)) {
+          return (
+           <SubagentCard
+            key={tool.toolCallId || idx}
+            tool={tool}
+            isRunning={!tool.result && r.status === 'running'}
+            formatToolData={formatToolData}
+           />
+          );
+         }
+         return (
+          <div key={tool.toolCallId || idx} className="admin-tool-pill">
+           <Terminal size={11}/>
+           <code>{tool.name}</code>
+           {tool.args?.command && <small className="muted-meta">{tool.args.command}</small>}
+           {tool.result && <Check size={11} className="tone-ok-text"/>}
+          </div>
+         );
+        })}
+       </div>
+      </details>
+     )
+    )}
 
     {textOutput && <Markdown>{textOutput}</Markdown>}
     {r.error && <div className="note note-bad">{r.error}</div>}
@@ -910,178 +945,118 @@ export function SystemAssistantPage({
  return (
   <div className="assistant-page">
    {/* Left Sidebar: Past Chats ordered by date */}
-   <aside className="assistant-sidebar">
-    <div className="assistant-sidebar-top">
-     <div className="row-title-line">
-      <Sparkles size={16} className="tone-live-text"/>
-      <strong>System Assistant</strong>
-     </div>
-     <button
-      type="button"
-      className="btn btn-primary btn-sm"
-      onClick={() => void createThread()}
-      disabled={busy}
-      title="Start a new conversation"
-     >
-      <Plus size={13}/>
-      <span>New chat</span>
-     </button>
-    </div>
-
-    <div className="assistant-sidebar-search">
-     <div className="search-box" style={{ width: '100%' }}>
-      <Search size={13}/>
-      <input
-       placeholder="Search past chats…"
-       value={searchQuery}
-       onChange={e => setSearchQuery(e.target.value)}
-      />
-     </div>
-    </div>
-
-    <div className="assistant-threads-scroll">
-     {threadGroups.length === 0 ? (
-      <div style={{ padding: '1.5rem 1rem', textAlign: 'center' }} className="muted-meta">
-       {searchQuery ? 'No matching conversations.' : 'No past conversations.'}
+   {sidebarOpen && (
+    <aside className="assistant-sidebar">
+     <div className="assistant-sidebar-top">
+      <div className="row-title-line">
+       <Sparkles size={15} className="tone-live-text"/>
+       <strong style={{ fontSize: 13 }}>System Assistant</strong>
       </div>
-     ) : (
-      threadGroups.map(group => (
-       <div key={group.title} className="assistant-group">
-        <span className="assistant-group-title">{group.title}</span>
-        {group.items.map(node => renderThreadNode(node))}
+      <button
+       type="button"
+       className="btn btn-primary btn-xs"
+       onClick={() => void createThread()}
+       disabled={busy}
+       title="Start a new conversation"
+       style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}
+      >
+       <Plus size={12}/>
+       <span>New</span>
+      </button>
+     </div>
+
+     <div className="assistant-sidebar-search">
+      <div className="search-box" style={{ width: '100%' }}>
+       <Search size={12}/>
+       <input
+        placeholder="Search past chats…"
+        value={searchQuery}
+        onChange={e => setSearchQuery(e.target.value)}
+        style={{ fontSize: 12 }}
+       />
+      </div>
+     </div>
+
+     <div className="assistant-threads-scroll">
+      {threadGroups.length === 0 ? (
+       <div style={{ padding: '1.5rem 1rem', textAlign: 'center' }} className="muted-meta">
+        {searchQuery ? 'No matching conversations.' : 'No past conversations.'}
        </div>
-      ))
-     )}
-    </div>
-   </aside>
+      ) : (
+       threadGroups.map(group => (
+        <div key={group.title} className="assistant-group">
+         <span className="assistant-group-title">{group.title}</span>
+         {group.items.map(node => renderThreadNode(node))}
+        </div>
+       ))
+      )}
+     </div>
+    </aside>
+   )}
 
    {/* Right Main Pane */}
    <main className="assistant-main-pane">
     <header className="assistant-header">
-     <div className="assistant-header-row">
-      <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', minWidth: 0 }}>
-       <h1 style={{ fontSize: '15px', fontWeight: 650, margin: 0, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+     <div className="assistant-header-left">
+      <button
+       type="button"
+       className="icon-btn"
+       aria-label={sidebarOpen ? 'Hide past chats' : 'Show past chats'}
+       title={sidebarOpen ? 'Hide past chats' : 'Show past chats'}
+       onClick={() => setSidebarOpen(o => !o)}
+      >
+       {sidebarOpen ? <PanelLeftClose size={15}/> : <PanelLeftOpen size={15}/>}
+      </button>
+
+      <div className="assistant-header-title-wrap">
+       <h1 className="assistant-header-title" title={currentThread?.title || 'System Assistant'}>
         {currentThread?.title || 'System Assistant'}
        </h1>
        {currentThread?.updated && (
-        <span className="muted-meta" style={{ whiteSpace: 'nowrap' }}>
-         Updated {ago(currentThread.updated)}
+        <span className="muted-meta assistant-header-time">
+         {ago(currentThread.updated)}
         </span>
        )}
       </div>
 
-      <div className="assistant-controls-row">
-       <button
-        type="button"
-        className="btn btn-secondary btn-sm"
-        disabled={busy || !thread}
-        title="Fork this conversation into a new session"
-        onClick={() => openForkModal(thread)}
-        style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}
-       >
-        <GitFork size={12}/>
-        <span>Fork</span>
-       </button>
-
-       <select
-        aria-label="Execution mode"
-        className="select-compact"
-        value={chat.permissionMode || 'manual'}
-        disabled={busy}
-        onChange={e => {
-         const permissionMode = e.target.value;
-         void perform(async () => {
-          let id = thread;
-          if (!id) {
-           const t = await api('/admin/threads', 'POST', {});
-           id = t.id;
-           setThread(id);
-           onSelectThread?.(id);
-          }
-          await api(`/admin/threads/${id}`, 'PATCH', { permissionMode });
-          setChat(await api(`/admin/threads/${id}`));
-         });
-        }}
-       >
-        <option value="manual">Manual approval mode</option>
-        <option value="yolo">⚡ Auto-execute (YOLO mode)</option>
-       </select>
-
-       {chat.permissionMode === 'yolo' && (
-        <span className="tag tag-accent" style={{ color: 'var(--live)', borderColor: 'var(--live)' }}>
-         <Zap size={11}/> YOLO Active
-        </span>
-       )}
-      </div>
+      <button
+       type="button"
+       className="icon-btn"
+       disabled={busy || !thread}
+       title="Fork conversation into a new session"
+       onClick={() => openForkModal(thread)}
+      >
+       <GitFork size={13}/>
+      </button>
      </div>
 
-     <div className="assistant-header-row" style={{ marginTop: '0.25rem' }}>
-      <nav className="tabs" style={{ border: 'none', padding: 0 }}>
-       {[
-        { id: 'chat' as const, label: 'Chat', icon: MessageSquare },
-        { id: 'skills' as const, label: 'Skills', count: data.skills?.length || 0, icon: Sparkles },
-        { id: 'approvals' as const, label: 'Approvals', count: pending.length, icon: Shield },
-        { id: 'plugins' as const, label: 'Plugins', icon: Package },
-        { id: 'work' as const, label: 'Runs', icon: Terminal }
-       ].map(t => (
-        <button
-         key={t.id}
-         type="button"
-         className={tab === t.id ? 'on' : ''}
-         onClick={() => setTab(t.id)}
-        >
-         <t.icon size={13}/>
-         <span>{t.label}</span>
-         {t.count !== undefined && t.count > 0 && <span className="count">{t.count}</span>}
-        </button>
-       ))}
-      </nav>
+     <nav className="assistant-header-tabs">
+      {[
+       { id: 'chat' as const, label: 'Chat', icon: MessageSquare },
+       { id: 'skills' as const, label: 'Skills', count: data.skills?.filter((s: Item) => s.active)?.length || 0, icon: Sparkles },
+       { id: 'approvals' as const, label: 'Approvals', count: pending.length, icon: Shield },
+       { id: 'plugins' as const, label: 'Plugins', icon: Package },
+       { id: 'work' as const, label: 'Runs', count: data.selfJobs?.length || 0, icon: Terminal }
+      ].map(t => (
+       <button
+        key={t.id}
+        type="button"
+        className={cx('assistant-nav-tab', tab === t.id && 'active')}
+        onClick={() => setTab(t.id)}
+       >
+        <t.icon size={13}/>
+        <span>{t.label}</span>
+        {t.count !== undefined && t.count > 0 && <span className="nav-badge">{t.count}</span>}
+       </button>
+      ))}
+     </nav>
 
+     <div className="assistant-header-right">
       {tab === 'chat' && (
-       <div className="assistant-controls-row">
-        <span
-         className="tag"
-         title={`Session Tokens: ${(chat.tokens?.total || 0).toLocaleString()} (Input: ${(chat.tokens?.input || 0).toLocaleString()}, Output: ${(chat.tokens?.output || 0).toLocaleString()}${chat.tokens?.cacheRead ? `, Cache: ${(chat.tokens?.cacheRead || 0).toLocaleString()}` : ''})`}
-         style={{ display: 'inline-flex', alignItems: 'center', gap: 4, cursor: 'default' }}
-        >
-         <Hash size={11} style={{ color: 'var(--accent)' }}/>
-         <span>{formatTokenCount(chat.tokens?.total || 0)} tokens</span>
-        </span>
-
-        <button
-         type="button"
-         className="btn btn-secondary btn-sm"
-         disabled={busy || compacting || !thread || (chat.messages?.length || 0) === 0 || chat.runs?.some((r: Item) => r.status === 'running')}
-         title="Compact session context manually into a summary to reduce token usage"
-         onClick={() => setCompactModal(true)}
-         style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}
-        >
-         {compacting ? <Loader2 size={12} className="spin"/> : <Minimize2 size={12}/>}
-         <span>Compact</span>
-        </button>
-
-        <select
-         aria-label="Connection"
-         className="select-compact"
-         value={selected?.id || connection}
-         onChange={e => {
-          const nextConn = e.target.value;
-          setConnection(nextConn);
-          localStorage.setItem('orchestra.admin.connection', nextConn);
-          const connObj = connections.find((c: Item) => c.id === nextConn);
-          const connModels: Item[] = connObj?.models || connObj?.config?.models || activeCatalog.find(p => p.id === connObj?.provider)?.models || [];
-          const firstModel = connModels[0]?.id || '';
-          setModel(firstModel);
-          localStorage.setItem('orchestra.admin.model', firstModel);
-         }}
-        >
-         <option value="">Connection</option>
-         {connections.map((c: Item) => <option key={c.id} value={c.id}>{c.name}</option>)}
-        </select>
-
+       <>
         <select
          aria-label="Model"
-         className="select-compact"
+         className="select-compact assistant-model-select"
          value={model}
          onChange={e => {
           const nextModel = e.target.value;
@@ -1089,48 +1064,65 @@ export function SystemAssistantPage({
           localStorage.setItem('orchestra.admin.model', nextModel);
          }}
         >
-         <option value="">Model</option>
          {models.map((m: Item) => <option key={m.id} value={m.id}>{m.name || m.id}</option>)}
         </select>
 
         <select
          aria-label="Thinking effort"
-         className="select-compact"
+         className="select-compact assistant-thinking-select"
          value={thinkingLevel}
          onChange={e => {
           const next = e.target.value;
           setThinkingLevel(next);
           localStorage.setItem('orchestra.admin.thinkingLevel', next);
          }}
+         title={`Thinking effort: ${thinkingLabel[thinkingLevel] || thinkingLevel}`}
         >
-         {thinkingLevels.map(v => <option key={v} value={v}>Thinking: {thinkingLabel[v]}</option>)}
+         {thinkingLevels.map(v => <option key={v} value={v}>🧠 {thinkingLabel[v]}</option>)}
         </select>
 
-        {data.skills?.filter((s: Item) => s.active).length > 0 && (
-         <button
-          type="button"
-          className="tag"
-          style={{ cursor: 'pointer', border: '1px solid var(--border)', background: 'var(--bg-elevated)', display: 'inline-flex', alignItems: 'center', gap: 4 }}
-          onClick={() => setTab('skills')}
-          title="Click to view and manage active skills"
-         >
-          <Sparkles size={11} style={{ color: 'var(--accent)' }}/>
-          <span>{data.skills.filter((s: Item) => s.active).length} skills active</span>
-         </button>
-        )}
+        <button
+         type="button"
+         className={cx('assistant-mode-pill', chat.permissionMode === 'yolo' ? 'yolo' : 'manual')}
+         title={chat.permissionMode === 'yolo' ? 'Auto-execution active (YOLO mode). Click to switch to manual approval.' : 'Manual approval mode. Click to switch to YOLO auto-execute.'}
+         disabled={busy}
+         onClick={() => {
+          const nextMode = chat.permissionMode === 'yolo' ? 'manual' : 'yolo';
+          void perform(async () => {
+           let id = thread;
+           if (!id) {
+            const t = await api('/admin/threads', 'POST', {});
+            id = t.id;
+            setThread(id);
+            onSelectThread?.(id);
+           }
+           await api(`/admin/threads/${id}`, 'PATCH', { permissionMode: nextMode });
+           setChat(await api(`/admin/threads/${id}`));
+          });
+         }}
+        >
+         <Zap size={11}/>
+         <span>{chat.permissionMode === 'yolo' ? 'YOLO' : 'Manual'}</span>
+        </button>
 
-        {contextName && (
-         <span className="tag" title="Dashboard context provided to assistant">
-          Context: {contextName}
-         </span>
-        )}
-       </div>
+        <button
+         type="button"
+         className="assistant-tokens-pill"
+         disabled={busy || compacting || !thread || (chat.messages?.length || 0) === 0 || chat.runs?.some((r: Item) => r.status === 'running')}
+         title={`Tokens: ${(chat.tokens?.total || 0).toLocaleString()} (Input: ${(chat.tokens?.input || 0).toLocaleString()}, Output: ${(chat.tokens?.output || 0).toLocaleString()}). Click to compact.`}
+         onClick={() => setCompactModal(true)}
+        >
+         {compacting ? <Loader2 size={11} className="spin"/> : <Hash size={11} style={{ color: 'var(--accent)' }}/>}
+         <span>{formatTokenCount(chat.tokens?.total || 0)}</span>
+         <span className="assistant-tokens-compact-hint">Compact</span>
+        </button>
+       </>
       )}
      </div>
     </header>
 
     {error && (
-     <div className="note note-bad" style={{ margin: '8px 24px 0' }} role="alert">
+     <div className="note note-bad" style={{ margin: '6px 20px 0' }} role="alert">
       <AlertCircle size={14}/>
       <span style={{ flex: 1 }}>{error}</span>
       <button type="button" className="icon-btn" onClick={() => setError('')}><X size={13}/></button>
@@ -1138,7 +1130,7 @@ export function SystemAssistantPage({
     )}
 
     {successNotice && (
-     <div className="note note-ok" style={{ margin: '8px 24px 0', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }} role="status">
+     <div className="note note-ok" style={{ margin: '6px 20px 0', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }} role="status">
       <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
        <CheckCircle2 size={13}/>
        <span>{successNotice}</span>
@@ -1149,17 +1141,17 @@ export function SystemAssistantPage({
 
     {/* Tab: Chat */}
     {tab === 'chat' && (
-     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, height: '100%', overflow: 'hidden' }}>
+     <div className="assistant-chat-pane">
       <div ref={streamWrapRef} className="assistant-stream-wrap">
        <div className="assistant-stream-inner">
         {!chat.messages.length && (
-         <div className="card padded stack-sm" style={{ padding: '2rem 1.5rem', textAlign: 'center' }}>
+         <div className="card padded stack-sm" style={{ padding: '2rem 1.5rem', textAlign: 'center', maxWidth: 640, margin: '2rem auto' }}>
           <Sparkles size={24} style={{ margin: '0 auto', color: 'var(--accent)' }}/>
-          <h2 style={{ fontSize: '16px', fontWeight: 650, margin: '4px 0' }}>How can System Assistant help you today?</h2>
-          <p className="muted" style={{ maxWidth: '580px', margin: '0 auto 1rem' }}>
-           Orchestrate sessions across repositories, inspect host environment, adapt and update Orchestra itself, or manage Pi extensions.
+          <h2 style={{ fontSize: '15px', fontWeight: 650, margin: '4px 0' }}>How can System Assistant help you today?</h2>
+          <p className="muted" style={{ fontSize: '13px', margin: '0 auto 1rem' }}>
+           Orchestrate sessions across repositories, inspect host environment, adapt Orchestra, or manage agent skills.
           </p>
-          <div className="admin-empty-prompts" style={{ maxWidth: '640px', margin: '0 auto', width: '100%' }}>
+          <div className="admin-empty-prompts" style={{ width: '100%' }}>
            {[
             'Inspect active sessions and summarize current progress across projects.',
             'Review open change requests and check test evidence.',
@@ -1197,7 +1189,7 @@ export function SystemAssistantPage({
         onDragOver={e => e.preventDefault()}
        >
         <textarea
-         rows={3}
+         rows={2}
          placeholder="Instruct System Assistant… (⌘Enter to send)"
          value={message}
          onChange={e => setMessage(e.target.value)}
@@ -1247,7 +1239,6 @@ export function SystemAssistantPage({
       </div>
      </div>
     )}
-
     {/* Tab: Approvals */}
     {tab === 'approvals' && (
      <div className="admin-scroll-pane stack-md" style={{ padding: '20px 24px', maxWidth: 960, margin: '0 auto', width: '100%' }}>

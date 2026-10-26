@@ -144,6 +144,17 @@ export async function repoTree(repo:Row,ref?:string,path='',recursive=false){
  });
  return {ref:targetRef,path:cleanPath,entries};
 }
+export const MIME_MAP:Record<string,string>={
+ png:'image/png',jpg:'image/jpeg',jpeg:'image/jpeg',gif:'image/gif',webp:'image/webp',
+ svg:'image/svg+xml',bmp:'image/bmp',ico:'image/x-icon',avif:'image/avif',
+ mp4:'video/mp4',webm:'video/webm',ogv:'video/ogg',ogg:'video/ogg',mov:'video/quicktime',
+ mp3:'audio/mpeg',wav:'audio/wav',oga:'audio/ogg',m4a:'audio/mp4',aac:'audio/aac',flac:'audio/flac',
+ pdf:'application/pdf',json:'application/json',js:'text/javascript',mjs:'text/javascript',
+ ts:'text/plain',tsx:'text/plain',jsx:'text/javascript',css:'text/css',html:'text/html',
+ txt:'text/plain; charset=utf-8',md:'text/markdown; charset=utf-8',markdown:'text/markdown; charset=utf-8',
+ xml:'application/xml',yaml:'text/yaml',yml:'text/yaml',csv:'text/csv'
+};
+
 export async function repoBlob(repo:Row,ref?:string,path=''){
  if(!repo.path||!existsSync(repo.path))throw Error('Repository not found');
  const targetRef=ref&&ref.trim()?ref.trim():(repo.base||'main');
@@ -153,14 +164,51 @@ export async function repoBlob(repo:Row,ref?:string,path=''){
 
  const sizeStr=await git(repo.path,'cat-file','-s',`${targetRef}:${cleanPath}`).catch(()=>'0');
  const size=parseInt(sizeStr.trim(),10)||0;
+
+ const ext=cleanPath.split('.').pop()?.toLowerCase()||'';
+ const isImage=['png','jpg','jpeg','gif','webp','svg','bmp','ico','avif'].includes(ext);
+ const isVideo=['mp4','webm','ogv','ogg','mov'].includes(ext);
+ const isAudio=['mp3','wav','oga','m4a','aac','flac'].includes(ext);
+ const isPdf=ext==='pdf';
+ const isMarkdown=['md','markdown'].includes(ext);
+ const mediaType=isImage?'image':isVideo?'video':isAudio?'audio':isPdf?'pdf':isMarkdown?'markdown':'code';
+
  if(size>2*1024*1024){
-  return {ref:targetRef,path:cleanPath,size,isBinary:false,isTooLarge:true,content:''};
+  if(isImage||isVideo||isAudio||isPdf){
+   return {ref:targetRef,path:cleanPath,size,isBinary:true,isTooLarge:false,mediaType,content:''};
+  }
+  return {ref:targetRef,path:cleanPath,size,isBinary:false,isTooLarge:true,mediaType,content:''};
  }
  const content=await git(repo.path,'show',`${targetRef}:${cleanPath}`).catch(e=>{
   throw Error(`Could not read file: ${e instanceof Error?e.message:String(e)}`);
  });
- const isBinary=content.slice(0,4000).includes('\0');
- return {ref:targetRef,path:cleanPath,size,isBinary,isTooLarge:false,content:isBinary?'':content};
+ const isBinary=(isImage&&ext!=='svg')||isVideo||isAudio||isPdf||content.slice(0,4000).includes('\0');
+ return {ref:targetRef,path:cleanPath,size,isBinary,isTooLarge:false,mediaType,content:isBinary&&ext!=='svg'?'':content};
+}
+
+export async function streamRepoRaw(repo:Row,ref:string|undefined,path:string,req:any,reply:any){
+ if(!repo.path||!existsSync(repo.path))return reply.code(404).send({error:'Repository not found'});
+ const targetRef=ref&&ref.trim()?ref.trim():(repo.base||'main');
+ if(targetRef.startsWith('-')||targetRef.includes('..'))return reply.code(400).send({error:'Invalid ref'});
+ const cleanPath=path?path.trim().replace(/^\/+/,''):'';
+ if(!cleanPath||cleanPath.startsWith('-')||cleanPath.includes('..'))return reply.code(400).send({error:'Invalid path'});
+
+ const ext=cleanPath.split('.').pop()?.toLowerCase()||'';
+ const mime=MIME_MAP[ext]||'application/octet-stream';
+ const filename=cleanPath.split('/').pop()||'file';
+
+ const sizeStr=await git(repo.path,'cat-file','-s',`${targetRef}:${cleanPath}`).catch(()=>'0');
+ const size=parseInt(sizeStr.trim(),10)||0;
+
+ reply.header('Content-Type',mime);
+ reply.header('Content-Disposition',`inline; filename="${encodeURIComponent(filename)}"`);
+ reply.header('Cache-Control','no-cache');
+ if(size>0)reply.header('Content-Length',size);
+
+ const child=spawn('git',['cat-file','blob',`${targetRef}:${cleanPath}`],{cwd:repo.path,stdio:['ignore','pipe','pipe']});
+ req.raw.on('close',()=>{if(!child.killed)child.kill();});
+ child.on('error',err=>{if(!reply.raw.headersSent)reply.code(500).send({error:err.message});});
+ return reply.send(child.stdout);
 }
 export async function repoCommits(repo:Row,ref?:string,limit=30){
  if(!repo.path||!existsSync(repo.path))return [];

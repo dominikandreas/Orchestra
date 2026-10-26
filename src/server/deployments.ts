@@ -412,6 +412,72 @@ function renderOpenPage(deploymentId: string, kind = 'deployment'): string {
 </html>`;
 }
 
+const ORCHESTRA_DASHBOARD_PAGES = new Set([
+  '',
+  '/',
+  '/overview',
+  '/work',
+  '/jobs',
+  '/previews',
+  '/home',
+  '/sessions',
+  '/changes',
+  '/automations',
+  '/agents',
+  '/deployments',
+  '/repositories',
+  '/settings',
+  '/assistant',
+  '/onboarding'
+]);
+
+function isOrchestraDashboardPath(pathname: string): boolean {
+  const clean = pathname.split('?')[0].replace(/\/+$/, '') || '/';
+  if (ORCHESTRA_DASHBOARD_PAGES.has(clean)) return true;
+  const segments = clean.split('/').filter(Boolean);
+  if (segments.length > 0 && ORCHESTRA_DASHBOARD_PAGES.has('/' + segments[0])) {
+    return true;
+  }
+  return false;
+}
+
+function getRefererPath(referer?: string): string {
+  if (!referer) return '';
+  try {
+    const u = new URL(referer, 'http://localhost');
+    return u.pathname;
+  } catch {
+    return '';
+  }
+}
+
+// Track recently proxied paths for deployments so that nested resource requests
+// (e.g., JS module imports inside an already proxied script like /src/main.ts)
+// are accurately mapped back to the originating deployment container even when
+// their Referer header does not contain /deployment/:id/.
+const recentDeploymentPaths = new Map<string, { deploymentId: string; timestamp: number }>();
+
+function trackDeploymentPath(path: string, deploymentId: string) {
+  const clean = path.split('?')[0];
+  if (!clean || clean === '/' || isOrchestraDashboardPath(clean)) return;
+  recentDeploymentPaths.set(clean, { deploymentId, timestamp: Date.now() });
+  if (recentDeploymentPaths.size > 2000) {
+    const cutoff = Date.now() - 30 * 60000;
+    for (const [k, v] of recentDeploymentPaths.entries()) {
+      if (v.timestamp < cutoff) recentDeploymentPaths.delete(k);
+    }
+  }
+}
+
+function resolveDeploymentForPath(refPath: string): string | undefined {
+  if (!refPath) return undefined;
+  const entry = recentDeploymentPaths.get(refPath);
+  if (entry && entry.timestamp > Date.now() - 30 * 60000) {
+    return entry.deploymentId;
+  }
+  return undefined;
+}
+
 export function registerDeploymentIngress(app: any) {
   const proxy = httpProxy.createProxyServer({ ws: true });
   proxy.on('error', (_err, _req, res: any) => {
@@ -505,6 +571,7 @@ export function registerDeploymentIngress(app: any) {
       if (targetPath.startsWith('?')) targetPath = '/' + targetPath;
       if (!targetPath) targetPath = '/';
       rawReq.url = targetPath;
+      trackDeploymentPath(targetPath, deploymentId);
       delete rawReq.headers.authorization;
       const cleanCookies = stripOrchestraCookies(rawReq.headers.cookie);
       if (cleanCookies) rawReq.headers.cookie = cleanCookies;
@@ -518,14 +585,34 @@ export function registerDeploymentIngress(app: any) {
 
     if (!url.startsWith('/api/')) {
       const referer = rawReq.headers.referer || '';
+      const refPath = getRefererPath(referer);
       const refMatch = referer.match(/\/(?:deployment|preview)\/([^/?#]+)/);
-      if (refMatch) {
-        const deploymentId = refMatch[1];
-        const isOrchestraDashboardPage = ['/', '/overview', '/repositories', '/changes', '/work', '/automations', '/deployments', '/previews', '/settings', '/onboarding'].some(page => url === page || url.startsWith(page + '?') || url.startsWith(page + '/'));
-        if (!isOrchestraDashboardPage) {
+      const cookies = parseCookies(rawReq.headers.cookie);
+
+      // Determine deployment ID:
+      // 1. Direct referer containing /deployment/:id or /preview/:id
+      // 2. Chained referer tracked from a previously proxied file (e.g. /src/main.ts importing /src/math/se3.ts)
+      // 3. Active deployment cookie (relay_active_deployment / relay_active_preview)
+      let deploymentId = refMatch ? refMatch[1] : undefined;
+      if (!deploymentId && refPath) {
+        deploymentId = resolveDeploymentForPath(refPath);
+      }
+      if (!deploymentId) {
+        deploymentId = cookies['relay_active_deployment'] || cookies['relay_active_preview'];
+      }
+
+      if (deploymentId) {
+        const isOrchestraDashboard = isOrchestraDashboardPath(url);
+        const refIsOrchestraDashboard = refPath ? isOrchestraDashboardPath(refPath) : false;
+        const isOrchestraAsset = url.startsWith('/assets/') && (refIsOrchestraDashboard || !refPath);
+
+        // Only proxy if this is NOT an internal Orchestra dashboard navigation or bundle asset request
+        if (!isOrchestraDashboard && !isOrchestraAsset) {
           const p = authorizeDeployment(rawReq, deploymentId);
           if (p) {
             reply.hijack();
+            trackDeploymentPath(url, p.id);
+            if (refPath) trackDeploymentPath(refPath, p.id);
             delete rawReq.headers.authorization;
             const cleanCookies = stripOrchestraCookies(rawReq.headers.cookie);
             if (cleanCookies) rawReq.headers.cookie = cleanCookies;
@@ -550,8 +637,16 @@ export function registerDeploymentIngress(app: any) {
         req.url = req.url!.slice(`${prefix}/${deploymentId}`.length) || '/';
       } else {
         const referer = req.headers.referer || '';
+        const refPath = getRefererPath(referer);
         const refMatch = referer.match(/\/(?:deployment|preview)\/([^/?#]+)/);
         if (refMatch) deploymentId = refMatch[1];
+        if (!deploymentId && refPath) {
+          deploymentId = resolveDeploymentForPath(refPath);
+        }
+        if (!deploymentId) {
+          const cookies = parseCookies(req.headers.cookie);
+          deploymentId = cookies['relay_active_deployment'] || cookies['relay_active_preview'];
+        }
       }
       if (!deploymentId) {
         socket.destroy();

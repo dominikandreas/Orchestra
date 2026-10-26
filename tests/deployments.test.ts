@@ -168,6 +168,53 @@ test('deployment ingress supports claim, cookie auth, and proxying under /deploy
   });
   assert.equal(rootRes.statusCode,200);
   assert.ok(rootRes.body.includes('Mock App Running'));
+
+  // 4. Root script request with referer pointing to deployment
+  const scriptRes=await app.inject({
+    method:'GET',
+    url:'/src/main.ts',
+    headers:{
+      cookie:cookieStr,
+      referer:`http://localhost:4310/deployment/${d.id}/`
+    }
+  });
+  assert.equal(scriptRes.statusCode,200);
+  assert.equal(scriptRes.body,'echo: /src/main.ts');
+
+  // 5. Nested module script import (referer is /src/main.ts without /deployment/:id/)
+  const nestedRes=await app.inject({
+    method:'GET',
+    url:'/node_modules/.vite/deps/three_examples_jsm_controls_OrbitControls__js.js',
+    headers:{
+      cookie:cookieStr,
+      referer:'http://localhost:4310/src/main.ts'
+    }
+  });
+  assert.equal(nestedRes.statusCode,200);
+  assert.equal(nestedRes.body,'echo: /node_modules/.vite/deps/three_examples_jsm_controls_OrbitControls__js.js');
+
+  // 6. Another nested module (se3.ts)
+  const se3Res=await app.inject({
+    method:'GET',
+    url:'/src/math/se3.ts',
+    headers:{
+      cookie:cookieStr,
+      referer:'http://localhost:4310/src/main.ts'
+    }
+  });
+  assert.equal(se3Res.statusCode,200);
+  assert.equal(se3Res.body,'echo: /src/math/se3.ts');
+
+  // 7. Orchestra dashboard page is not proxied even when active deployment cookie is present
+  const dashRes=await app.inject({
+    method:'GET',
+    url:'/deployments',
+    headers:{
+      cookie:cookieStr,
+      referer:'http://localhost:4310/deployments'
+    }
+  });
+  assert.notEqual(dashRes.body,'echo: /deployments');
 });
 
 test('deployments track specific branch and auto-update worktree when branch SHA updates',async()=>{

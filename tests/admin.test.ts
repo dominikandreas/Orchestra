@@ -10,7 +10,7 @@ let app:any,owner:any,ownerToken:string,viewerToken:string,connection:any,repo:a
 const marker=join(root,'approved.txt');
 const server=http.createServer(async(req,res)=>{let body='';for await(const b of req)body+=b;const parsed=JSON.parse(body);requests.push(parsed);const hasTool=parsed.messages.some((m:any)=>m.role==='tool');const text=parsed.messages.filter((m:any)=>m.role==='user').map((m:any)=>JSON.stringify(m.content)).join('\n');
  res.writeHead(200,{'Content-Type':'text/event-stream'});const chunk=(delta:any,finish:any=null)=>res.write(`data: ${JSON.stringify({id:'admin-fixture',object:'chat.completion.chunk',created:Math.floor(Date.now()/1000),model:'fixture',choices:[{index:0,delta,finish_reason:finish}]})}\n\n`);
- if(!hasTool){let name='workspace_state',args:any={};if(text.includes('host fixture')){name='request_admin_action';args={reason:'Write a test marker after approval',action:JSON.stringify({kind:'host',command:`printf approved > '${marker}'`,cwd:root,timeout:10})};}else if(text.includes('orchestrate fixture')){name='start_job';args={repoId:repo.id,title:'Contextual improvement',prompt:'Implement fixture change',kind:'implement',reviewAfter:true,autonomy:'auto'};}else if(text.includes('self fixture')){name='start_job';args={self:true,title:'Improve Orchestra fixture',prompt:'Adapt the app',kind:'adapt',reviewAfter:true};}else if(text.includes('plugin fixture'))name='extension_ping';chunk({role:'assistant',tool_calls:[{index:0,id:'call_admin',type:'function',function:{name,arguments:JSON.stringify(args)}}]});chunk({},'tool_calls');}else{chunk({role:'assistant',content:'Fixture request handled. Check tracked work and approvals.'});chunk({},'stop');}res.end('data: [DONE]\n\n');
+ if(!hasTool && parsed.tools?.length){let name='workspace_state',args:any={};if(text.includes('host fixture')){name='request_admin_action';args={reason:'Write a test marker after approval',action:JSON.stringify({kind:'host',command:`printf approved > '${marker}'`,cwd:root,timeout:10})};}else if(text.includes('orchestrate fixture')){name='start_job';args={repoId:repo.id,title:'Contextual improvement',prompt:'Implement fixture change',kind:'implement',reviewAfter:true,autonomy:'auto'};}else if(text.includes('self fixture')){name='start_job';args={self:true,title:'Improve Orchestra fixture',prompt:'Adapt the app',kind:'adapt',reviewAfter:true};}else if(text.includes('plugin fixture'))name='extension_ping';chunk({role:'assistant',tool_calls:[{index:0,id:'call_admin',type:'function',function:{name,arguments:JSON.stringify(args)}}]});chunk({},'tool_calls');}else{chunk({role:'assistant',content:'Fixture request handled. Check tracked work and approvals.'});chunk({},'stop');}res.end('data: [DONE]\n\n');
 });
 const request=(method:string,url:string,token=ownerToken,payload?:any)=>app.inject({method,url,headers:{authorization:`Bearer ${token}`},payload});
 async function chat(text:string,context:any={}){const thread=agent.createAdminThread(owner.id);const run=agent.startAdminTurn(thread.id,owner.id,{message:text,connectionId:connection.id,model:'fixture',context});for(let n=0;n<500;n++){if(s.get('adminRuns',run.id)?.status!=='running')break;await new Promise(r=>setTimeout(r,20));}assert.equal(s.get('adminRuns',run.id)?.status,'completed',s.get('adminRuns',run.id)?.error);return agent.adminThread(thread.id,owner.id);}
@@ -147,4 +147,155 @@ test('sessions can use and create agent skills via admin tools',async()=>{
  const used=JSON.parse(useResult.content[0].text);
  assert.equal(used.name,'deploy-verification');
  assert.ok(used.content.includes('Check docker ps'));
+
+ // Deactivate skill via tool
+ const deactivateSkillTool=tools.find(t=>t.name==='deactivate_skill')!;
+ assert.ok(deactivateSkillTool);
+ const deactivateResult=await deactivateSkillTool.execute('call_deactivate_skill',{nameOrId:'deploy-verification'});
+ const deactivated=JSON.parse(deactivateResult.content[0].text);
+ assert.equal(deactivated.ok,true);
+ assert.equal(deactivated.skill.active,false);
+});
+
+test('skill resources can be activated, deactivated via PATCH/POST and deleted via API',async()=>{
+ // Create a skill resource
+ const createRes=await app.inject({
+  method:'POST',
+  url:'/api/resources',
+  headers:{authorization:`Bearer ${ownerToken}`},
+  payload:{
+   name:'ci-cleanup',
+   kind:'skill',
+   content:'echo "cleaning containers"'
+  }
+ });
+ assert.equal(createRes.statusCode,200);
+ const skill=createRes.json();
+ assert.equal(skill.name,'ci-cleanup');
+ assert.equal(skill.active,false);
+
+ // Activate skill
+ const activateRes=await app.inject({
+  method:'POST',
+  url:`/api/resources/${skill.id}/activate`,
+  headers:{authorization:`Bearer ${ownerToken}`}
+ });
+ assert.equal(activateRes.statusCode,200);
+ assert.equal(activateRes.json().active,true);
+
+ // Deactivate skill via PATCH /api/resources/:id
+ const patchRes=await app.inject({
+  method:'PATCH',
+  url:`/api/resources/${skill.id}`,
+  headers:{authorization:`Bearer ${ownerToken}`},
+  payload:{active:false}
+ });
+ assert.equal(patchRes.statusCode,200);
+ assert.equal(patchRes.json().active,false);
+
+ // Re-activate
+ await app.inject({
+  method:'POST',
+  url:`/api/resources/${skill.id}/activate`,
+  headers:{authorization:`Bearer ${ownerToken}`}
+ });
+
+ // Deactivate skill via POST /api/resources/:id/deactivate
+ const postDeactivateRes=await app.inject({
+  method:'POST',
+  url:`/api/resources/${skill.id}/deactivate`,
+  headers:{authorization:`Bearer ${ownerToken}`}
+ });
+ assert.equal(postDeactivateRes.statusCode,200);
+ assert.equal(postDeactivateRes.json().active,false);
+
+ // Delete skill via DELETE /api/resources/:id
+ const deleteRes=await app.inject({
+  method:'DELETE',
+  url:`/api/resources/${skill.id}`,
+  headers:{authorization:`Bearer ${ownerToken}`}
+ });
+ assert.equal(deleteRes.statusCode,200);
+ assert.equal(deleteRes.json().ok,true);
+ assert.equal(s.get('resources',skill.id),undefined);
+});
+
+test('thread exposes token counts and supports manual compaction endpoint',async()=>{
+ const thread=agent.createAdminThread(owner.id);
+ const tInit=agent.adminThread(thread.id,owner.id);
+ assert.ok(tInit.tokens);
+ assert.equal(typeof tInit.tokens.total,'number');
+ assert.ok(Array.isArray(tInit.compactions));
+
+ // Run a turn
+ const run=agent.startAdminTurn(thread.id,owner.id,{message:'Hello assistant tokens',connectionId:connection.id,model:'fixture'});
+ for(let n=0;n<500;n++){if(s.get('adminRuns',run.id)?.status!=='running')break;await new Promise(r=>setTimeout(r,20));}
+ assert.equal(s.get('adminRuns',run.id)?.status,'completed');
+
+ const tAfter=agent.adminThread(thread.id,owner.id);
+ assert.ok(tAfter.tokens);
+ assert.ok(tAfter.tokens.total>=0);
+
+ // Test POST /api/admin/threads/:id/compact
+ const compactRes=await app.inject({
+  method:'POST',
+  url:`/api/admin/threads/${thread.id}/compact`,
+  headers:{authorization:`Bearer ${ownerToken}`},
+  payload:{instructions:'Keep concise'}
+ });
+ // Because the fixture conversation is very small, it will either succeed or report conversation is too short/already compacted
+ if(compactRes.statusCode===200){
+  assert.equal(compactRes.json().ok,true);
+ }else{
+  assert.equal(compactRes.statusCode,400);
+  assert.ok(compactRes.json().error.includes('compact')||compactRes.json().error.includes('short'));
+ }
+});
+
+test('interrupted assistant run is positioned chronologically and not at the bottom after newer messages arrive',async()=>{
+ const thread=agent.createAdminThread(owner.id);
+
+ // Turn 1: user sends prompt 1, run starts and is interrupted
+ const t1=new Date(Date.now()-10000).toISOString();
+ const msg1=s.put('adminMessages',{threadId:thread.id,role:'user',text:'Prompt 1',created:t1});
+ const run1=s.put('adminRuns',{threadId:thread.id,authorId:owner.id,title:'Prompt 1',status:'interrupted',error:'Turn was interrupted',created:new Date(Date.now()-9900).toISOString()});
+
+ // Turn 2: user sends prompt 2 later, run completes
+ const t2=new Date(Date.now()-5000).toISOString();
+ const msg2=s.put('adminMessages',{threadId:thread.id,role:'user',text:'Prompt 2',created:t2});
+ const run2=s.put('adminRuns',{threadId:thread.id,authorId:owner.id,title:'Prompt 2',status:'completed',created:new Date(Date.now()-4900).toISOString()});
+ const msg3=s.put('adminMessages',{threadId:thread.id,role:'assistant',text:'Response 2',runId:run2.id,created:new Date(Date.now()-4500).toISOString()});
+
+ const t=agent.adminThread(thread.id,owner.id);
+ assert.equal(t.messages.length,3);
+ assert.equal(t.runs.length,2);
+
+ // Build the timeline identical to admin-console's timelineEntries
+ const completedAssistantRunIds=new Set(t.messages.filter((m:any)=>m.role==='assistant'&&m.runId).map((m:any)=>m.runId));
+ const unfinalizedRuns=t.runs.filter((r:any)=>!completedAssistantRunIds.has(r.id)&&(r.status==='running'||r.status==='failed'||r.status==='interrupted'||r.status==='cancelled'));
+
+ const timeline:any[]=[
+  ...t.messages.map((m:any)=>({kind:'message',data:m,created:m.created,role:m.role})),
+  ...unfinalizedRuns.map((r:any)=>({kind:'run',data:r,created:r.created,role:'assistant'}))
+ ].sort((a,b)=>{
+  const diff=(a.created||'').localeCompare(b.created||'');
+  if(diff!==0)return diff;
+  if(a.role==='user'&&b.role==='assistant')return -1;
+  if(a.role==='assistant'&&b.role==='user')return 1;
+  return 0;
+ });
+
+ assert.equal(timeline.length,4);
+ // Order MUST be: Prompt 1 -> Interrupted Run 1 -> Prompt 2 -> Response 2
+ assert.equal(timeline[0].kind,'message');
+ assert.equal(timeline[0].data.text,'Prompt 1');
+
+ assert.equal(timeline[1].kind,'run');
+ assert.equal(timeline[1].data.status,'interrupted');
+
+ assert.equal(timeline[2].kind,'message');
+ assert.equal(timeline[2].data.text,'Prompt 2');
+
+ assert.equal(timeline[3].kind,'message');
+ assert.equal(timeline[3].data.text,'Response 2');
 });

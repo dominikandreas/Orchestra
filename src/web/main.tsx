@@ -500,7 +500,7 @@ function App(){
      </footer>
     </aside>
 
-    <main className="workspace-main">
+    <main className={cx('workspace-main',page==='assistant'&&'workspace-main-assistant')}>
      <header className="topbar-compact">
       <div className="topbar-compact-left">
        <button

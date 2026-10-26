@@ -27,6 +27,8 @@ export function enqueue(input:any,user:Row){
   if(input.changeId&&(!c||c.repoId!==r.id||c.status!=='open'))throw Error('Invalid change request');
   // Precedence: explicit input, then agent definition, then repository defaults.
   const agent=input.agentId?visibleAgent(user,input.agentId,r.projectId):undefined;
+  const agentPrompt=agent?.systemPrompt||agent?.instructions;
+  const agentContext=agentPrompt?`Agent "${agent.name}" system prompt:\n${agentPrompt}\n\n`:'';
   const kind=input.kind||agent?.kind||'implement';
   const mode=levels[Math.min(levels.indexOf(input.autonomy||agent?.autonomy||r.autonomy||'prepare'),levels.indexOf(r.autonomy||'prepare'))]||'approve';
   const connectionId=input.connectionId||agent?.connectionId||r.connectionId;
@@ -49,6 +51,7 @@ export function enqueue(input:any,user:Row){
     kind,
     title:input.title||input.prompt?.slice(0,90)||'Task',
     prompt:promptText,
+    context:input.context||(agentContext?agentContext.trimEnd():undefined),
     images:input.images,
     attachments:input.attachments,
     targetBranch:input.targetBranch,

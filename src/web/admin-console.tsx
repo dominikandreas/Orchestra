@@ -1,8 +1,9 @@
 import React, { useEffect, useState, useRef, useMemo, useCallback } from 'react';
 import {
  MessageSquare, X, Plus, Send, Square, Sparkles, Shield, Package,
- ChevronRight, Loader2, ExternalLink, Terminal, Check, AlertCircle, Brain,
- Trash2, Search, SlidersHorizontal, ArrowLeft, RotateCw, CheckCircle2, Zap
+ ChevronRight, ChevronDown, Loader2, ExternalLink, Terminal, Check, AlertCircle, Brain,
+ Trash2, Search, SlidersHorizontal, ArrowLeft, RotateCw, CheckCircle2, Zap,
+ GitFork, Pencil, BookOpen, Copy, Minimize2, Hash
 } from 'lucide-react';
 import { useAttachmentState, AttachmentInput, MessageAttachments } from './attachments.js';
 import { isSubagent, SubagentCard, getSubagentActivityText, parseSubagentInfo, formatToolData } from './subagent.js';
@@ -15,29 +16,62 @@ import { Status, Dot, Modal, Confirm } from './ui.js';
 type Api = (path: string, method?: string, data?: any) => Promise<any>;
 const label = (v?: string) => v ? v.replaceAll('_', ' ').replace(/^\w/, x => x.toUpperCase()) : '';
 
+export type ThreadNode = Item & {
+ children: ThreadNode[];
+};
+
+export function buildThreadTree(threads: Item[]): ThreadNode[] {
+ const nodeMap = new Map<string, ThreadNode>();
+ for (const t of threads) {
+  nodeMap.set(t.id, { ...t, children: [] });
+ }
+ const roots: ThreadNode[] = [];
+ for (const t of threads) {
+  const node = nodeMap.get(t.id)!;
+  if (t.parentThreadId && nodeMap.has(t.parentThreadId)) {
+   nodeMap.get(t.parentThreadId)!.children.push(node);
+  } else {
+   roots.push(node);
+  }
+ }
+ return roots;
+}
+
 export function groupThreadsByDate(threads: Item[], query = '') {
  const q = query.trim().toLowerCase();
- const filtered = query.trim()
-  ? threads.filter(t => (t.title || '').toLowerCase().includes(q))
-  : threads;
+ const roots = buildThreadTree(threads);
 
- const sorted = [...filtered].sort((a, b) => {
-  const tb = new Date(b.updated || b.created || 0).getTime();
-  const ta = new Date(a.updated || a.created || 0).getTime();
-  return tb - ta;
- });
+ const sortNodes = (nodes: ThreadNode[]) => {
+  nodes.sort((a, b) => {
+   const tb = new Date(b.updated || b.created || 0).getTime();
+   const ta = new Date(a.updated || a.created || 0).getTime();
+   return tb - ta;
+  });
+  for (const n of nodes) {
+   if (n.children.length) sortNodes(n.children);
+  }
+ };
+ sortNodes(roots);
+
+ const filterNode = (node: ThreadNode): boolean => {
+  if (!q) return true;
+  if ((node.title || '').toLowerCase().includes(q)) return true;
+  return node.children.some(child => filterNode(child));
+ };
+
+ const filteredRoots = roots.filter(filterNode);
 
  const now = new Date();
  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
  const startOfYesterday = startOfToday - 86400000;
  const startOf7Days = startOfToday - 6 * 86400000;
 
- const today: Item[] = [];
- const yesterday: Item[] = [];
- const past7Days: Item[] = [];
- const older: Item[] = [];
+ const today: ThreadNode[] = [];
+ const yesterday: ThreadNode[] = [];
+ const past7Days: ThreadNode[] = [];
+ const older: ThreadNode[] = [];
 
- for (const t of sorted) {
+ for (const t of filteredRoots) {
   const time = new Date(t.updated || t.created || 0).getTime();
   if (time >= startOfToday) today.push(t);
   else if (time >= startOfYesterday) yesterday.push(t);
@@ -45,7 +79,7 @@ export function groupThreadsByDate(threads: Item[], query = '') {
   else older.push(t);
  }
 
- const groups: { title: string; items: Item[] }[] = [];
+ const groups: { title: string; items: ThreadNode[] }[] = [];
  if (today.length) groups.push({ title: 'Today', items: today });
  if (yesterday.length) groups.push({ title: 'Yesterday', items: yesterday });
  if (past7Days.length) groups.push({ title: 'Previous 7 days', items: past7Days });
@@ -74,8 +108,8 @@ export function SystemAssistantPage({
  initialThreadId?: string;
  onSelectThread?: (id: string | null) => void;
 }) {
- const [tab, setTab] = useState<'chat' | 'approvals' | 'plugins' | 'work'>('chat');
- const [data, setData] = useState<Item>({ threads: [], runs: [], actions: [], plugins: [], selfJobs: [], deployments: [] });
+ const [tab, setTab] = useState<'chat' | 'skills' | 'approvals' | 'plugins' | 'work'>('chat');
+ const [data, setData] = useState<Item>({ threads: [], runs: [], actions: [], plugins: [], selfJobs: [], deployments: [], skills: [] });
  const [thread, setThread] = useState(initialThreadId || '');
  const [chat, setChat] = useState<Item>({ messages: [], runs: [] });
  const [message, setMessage] = useState('');
@@ -83,6 +117,22 @@ export function SystemAssistantPage({
  const [approvalsFilter, setApprovalsFilter] = useState<'all' | 'pending' | 'completed'>('all');
  const [confirmDeleteThreadId, setConfirmDeleteThreadId] = useState<string | null>(null);
  const [confirmDeleteActionId, setConfirmDeleteActionId] = useState<string | null>(null);
+ const [confirmDeleteMessageId, setConfirmDeleteMessageId] = useState<string | null>(null);
+ const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
+ const [editingText, setEditingText] = useState('');
+ const [forkModal, setForkModal] = useState<{ threadId: string; messageId?: string; title: string } | null>(null);
+ const [expandedThreads, setExpandedThreads] = useState<Record<string, boolean>>({});
+ const [compactModal, setCompactModal] = useState(false);
+ const [compactInstructions, setCompactInstructions] = useState('');
+ const [compacting, setCompacting] = useState(false);
+ const [successNotice, setSuccessNotice] = useState<string | null>(null);
+
+ const [newSkillModal, setNewSkillModal] = useState(false);
+ const [skillName, setSkillName] = useState('');
+ const [skillDesc, setSkillDesc] = useState('');
+ const [skillContent, setSkillContent] = useState('');
+ const [skillProject, setSkillProject] = useState('');
+ const [skillActive, setSkillActive] = useState(true);
 
  const [connection, setConnection] = useState(localStorage.getItem('orchestra.admin.connection') || '');
  const [model, setModel] = useState(localStorage.getItem('orchestra.admin.model') || '');
@@ -95,6 +145,7 @@ export function SystemAssistantPage({
  const [localCatalog, setLocalCatalog] = useState<Item[]>(catalog || []);
  const attachmentState = useAttachmentState();
  const end = useRef<HTMLDivElement>(null);
+ const streamWrapRef = useRef<HTMLDivElement>(null);
 
  // Sync thread when initialThreadId changes
  useEffect(() => {
@@ -137,7 +188,9 @@ export function SystemAssistantPage({
 
  useEffect(() => {
   if (chat.messages.length) {
-   end.current?.scrollIntoView({ block: 'nearest' });
+   if (streamWrapRef.current) {
+    streamWrapRef.current.scrollTop = streamWrapRef.current.scrollHeight;
+   }
   }
  }, [chat.messages.length, chat.runs.at(-1)?.events?.length, tab]);
 
@@ -260,6 +313,236 @@ export function SystemAssistantPage({
   }
  };
 
+ const saveEditedMessage = async (messageId: string) => {
+  if (!thread || !editingText.trim()) return;
+  setBusy(true); setError('');
+  try {
+   await api(`/admin/threads/${thread}/messages/${messageId}`, 'PATCH', { text: editingText.trim() });
+   setChat(prev => ({
+    ...prev,
+    messages: prev.messages.map((item: Item) => item.id === messageId ? { ...item, text: editingText.trim() } : item)
+   }));
+   setEditingMessageId(null);
+   await load();
+  } catch (e: any) {
+   setError(e.message);
+  } finally {
+   setBusy(false);
+  }
+ };
+
+ const deleteMessage = async (messageId: string) => {
+  if (!thread) return;
+  setBusy(true); setError('');
+  try {
+   await api(`/admin/threads/${thread}/messages/${messageId}`, 'DELETE');
+   setChat(prev => ({
+    ...prev,
+    messages: prev.messages.filter((item: Item) => item.id !== messageId)
+   }));
+   setConfirmDeleteMessageId(null);
+   await load();
+  } catch (e: any) {
+   setError(e.message);
+  } finally {
+   setBusy(false);
+  }
+ };
+
+ const openForkModal = (targetThreadId: string, targetMessageId?: string) => {
+  const t = data.threads.find((x: Item) => x.id === targetThreadId);
+  const baseTitle = t?.title || 'Conversation';
+  setForkModal({
+   threadId: targetThreadId,
+   messageId: targetMessageId,
+   title: `Fork of ${baseTitle}`
+  });
+ };
+
+ const handleForkSubmit = async () => {
+  if (!forkModal) return;
+  setBusy(true); setError('');
+  try {
+   const forked = await api(`/admin/threads/${forkModal.threadId}/fork`, 'POST', {
+    title: forkModal.title.trim() || undefined,
+    messageId: forkModal.messageId || undefined
+   });
+   setExpandedThreads(prev => ({ ...prev, [forkModal.threadId]: true }));
+   setForkModal(null);
+   await load();
+   selectThread(forked.id);
+  } catch (e: any) {
+   setError(e.message);
+  } finally {
+   setBusy(false);
+  }
+ };
+
+ const formatTokenCount = (num: number): string => {
+  if (!num || num < 0) return '0';
+  if (num < 1000) return String(num);
+  if (num < 1000000) return (num / 1000).toFixed(num >= 10000 ? 1 : 1).replace(/\.0$/, '') + 'k';
+  return (num / 1000000).toFixed(2).replace(/\.00$/, '') + 'M';
+ };
+
+ const handleCompact = async () => {
+  if (!thread) return;
+  setCompacting(true);
+  try {
+   const res = await api(`/admin/threads/${thread}/compact`, 'POST', {
+    instructions: compactInstructions.trim() || undefined,
+    connectionId: selected?.id || connection,
+    model
+   });
+   setCompactModal(false);
+   setCompactInstructions('');
+   const beforeStr = res.tokensBefore ? `${formatTokenCount(res.tokensBefore)} tokens summarized` : 'history summarized';
+   setSuccessNotice(`Context compacted: ${beforeStr}`);
+   const refreshed = await api(`/admin/threads/${thread}`);
+   setChat(refreshed);
+   setTimeout(() => setSuccessNotice(null), 6000);
+  } catch (err: any) {
+   alert('Compaction failed: ' + (err?.message || err));
+  } finally {
+   setCompacting(false);
+  }
+ };
+
+ const createSkill = async () => {
+  setBusy(true); setError('');
+  try {
+   const res = await api('/resources', 'POST', {
+    name: skillName.trim(),
+    description: skillDesc.trim(),
+    kind: 'skill',
+    content: skillContent.trim(),
+    projectId: skillProject || undefined
+   });
+   if (skillActive) {
+    await api(`/resources/${res.id}/activate`, 'POST', {});
+   }
+   setNewSkillModal(false);
+   setSkillName('');
+   setSkillDesc('');
+   setSkillContent('');
+   setSkillProject('');
+   setSkillActive(true);
+   await load();
+  } catch (e: any) {
+   setError(e.message);
+  } finally {
+   setBusy(false);
+  }
+ };
+
+ // Auto-expand ancestors of active thread
+ useEffect(() => {
+  if (!thread || !data.threads?.length) return;
+  const threadMap = new Map<string, Item>(data.threads.map((t: Item) => [t.id, t]));
+  let cur = threadMap.get(thread);
+  const toExpand: Record<string, boolean> = {};
+  while (cur && cur.parentThreadId) {
+   toExpand[cur.parentThreadId] = true;
+   cur = threadMap.get(cur.parentThreadId);
+  }
+  if (Object.keys(toExpand).length > 0) {
+   setExpandedThreads(prev => ({ ...prev, ...toExpand }));
+  }
+ }, [thread, data.threads]);
+
+ const isNodeExpanded = (nodeId: string, nodeChildren: ThreadNode[]) => {
+  if (searchQuery.trim()) {
+   const q = searchQuery.trim().toLowerCase();
+   const hasMatchingDescendant = (n: ThreadNode): boolean => {
+    if ((n.title || '').toLowerCase().includes(q)) return true;
+    return n.children.some(hasMatchingDescendant);
+   };
+   if (nodeChildren.some(hasMatchingDescendant)) return true;
+  }
+  return expandedThreads[nodeId] ?? false;
+ };
+
+ const renderThreadNode = (node: ThreadNode, depth = 0): React.ReactNode => {
+  const hasChildren = node.children.length > 0;
+  const isExpanded = isNodeExpanded(node.id, node.children);
+  const isActive = node.id === thread;
+
+  return (
+   <div key={node.id} className="assistant-thread-tree-node">
+    <div
+     role="button"
+     tabIndex={0}
+     className={`assistant-thread-btn ${isActive ? 'active' : ''}`}
+     onClick={() => selectThread(node.id)}
+     onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); selectThread(node.id); } }}
+     style={{ paddingLeft: depth > 0 ? `${depth * 12 + 6}px` : undefined }}
+    >
+     {hasChildren ? (
+      <button
+       type="button"
+       className="assistant-chevron-btn"
+       title={isExpanded ? 'Collapse forked sessions' : 'Expand forked sessions'}
+       onClick={e => {
+        e.stopPropagation();
+        setExpandedThreads(prev => ({ ...prev, [node.id]: !isExpanded }));
+       }}
+      >
+       {isExpanded ? <ChevronDown size={13}/> : <ChevronRight size={13}/>}
+      </button>
+     ) : depth > 0 ? (
+      <GitFork size={12} style={{ flexShrink: 0, marginTop: 2, color: 'var(--muted)', transform: 'rotate(90deg)' }}/>
+     ) : (
+      <MessageSquare size={13} style={{ flexShrink: 0, marginTop: 2 }}/>
+     )}
+
+     <div className="assistant-thread-info">
+      <div style={{ display: 'flex', alignItems: 'center', gap: 4, minWidth: 0 }}>
+       <span className="assistant-thread-title">{node.title || 'Conversation'}</span>
+       {hasChildren && (
+        <span className="assistant-fork-badge" title={`${node.children.length} forked session${node.children.length === 1 ? '' : 's'}`}>
+         <GitFork size={9}/>
+         <span>{node.children.length}</span>
+        </span>
+       )}
+      </div>
+      <span className="assistant-thread-date">{ago(node.updated || node.created)}</span>
+     </div>
+
+     <div className="assistant-thread-actions">
+      <button
+       type="button"
+       className="assistant-thread-action-btn"
+       title="Fork conversation"
+       onClick={e => {
+        e.stopPropagation();
+        openForkModal(node.id);
+       }}
+      >
+       <GitFork size={12}/>
+      </button>
+      <button
+       type="button"
+       className="assistant-thread-action-btn del"
+       title="Delete conversation"
+       onClick={e => {
+        e.stopPropagation();
+        setConfirmDeleteThreadId(node.id);
+       }}
+      >
+       <Trash2 size={12}/>
+      </button>
+     </div>
+    </div>
+
+    {hasChildren && isExpanded && (
+     <div className="assistant-thread-children">
+      {node.children.map(child => renderThreadNode(child, depth + 1))}
+     </div>
+    )}
+   </div>
+  );
+ };
+
  const deleteAction = async (id: string) => {
   setBusy(true); setError('');
   try {
@@ -312,6 +595,55 @@ export function SystemAssistantPage({
   setChat(await api(`/admin/threads/${id}`));
  });
 
+ type TimelineEntry =
+  | { kind: 'message'; data: Item; created: string; role: string }
+  | { kind: 'run'; data: Item; created: string; role: string }
+  | { kind: 'compaction'; data: Item; created: string; role: string };
+
+ const timelineEntries = useMemo(() => {
+  const completedAssistantRunIds = new Set(
+   (chat.messages || []).filter((m: Item) => m.role === 'assistant' && m.runId).map((m: Item) => m.runId)
+  );
+
+  const unfinalizedRuns = (chat.runs || []).filter((r: Item) =>
+   !completedAssistantRunIds.has(r.id) &&
+   (r.status === 'running' || r.status === 'failed' || r.status === 'interrupted' || r.status === 'cancelled' ||
+    r.events?.some((e: Item) => e.type === 'text' || e.type === 'result'))
+  );
+
+  const items: TimelineEntry[] = [
+   ...(chat.messages || []).map((m: Item) => ({
+    kind: 'message' as const,
+    data: m,
+    created: m.created || '',
+    role: m.role || 'user'
+   })),
+   ...unfinalizedRuns.map((r: Item) => ({
+    kind: 'run' as const,
+    data: r,
+    created: r.created || '',
+    role: 'assistant'
+   })),
+   ...(chat.compactions || []).map((c: Item) => ({
+    kind: 'compaction' as const,
+    data: c,
+    created: c.timestamp || '',
+    role: 'system'
+   }))
+  ];
+
+  return items.sort((a, b) => {
+   const ta = new Date(a.created || 0).getTime();
+   const tb = new Date(b.created || 0).getTime();
+   if (ta !== tb) return ta - tb;
+   const diff = (a.created || '').localeCompare(b.created || '');
+   if (diff !== 0) return diff;
+   if (a.role === 'user' && b.role === 'assistant') return -1;
+   if (a.role === 'assistant' && b.role === 'user') return 1;
+   return 0;
+  });
+ }, [chat.messages, chat.runs, chat.compactions]);
+
  const threadGroups = useMemo(() => groupThreadsByDate(data.threads, searchQuery), [data.threads, searchQuery]);
 
  const currentThread = data.threads.find((t: Item) => t.id === thread);
@@ -325,6 +657,255 @@ export function SystemAssistantPage({
   }
   return data.actions;
  }, [data.actions, approvalsFilter]);
+
+ const renderMessageTurn = (m: Item) => {
+  const linkedRun = m.runId ? chat.runs?.find((r: Item) => r.id === m.runId) : null;
+  const runThinking = linkedRun?.events?.filter((e: Item) => e.type === 'thinking').map((e: Item) => e.data).join('');
+  const associatedJobs = getJobsForRun(m.runId);
+  const isEditing = editingMessageId === m.id;
+  return (
+   <article key={`msg-${m.id}`} className={`turn ${m.role === 'user' ? 'turn-user' : 'turn-agent'}`}>
+    <header className="turn-meta">
+     <span className="turn-author">{m.role === 'user' ? (me.name || 'Admin') : 'Assistant'}</span>
+     {m.created && <span className="muted-meta">{ago(m.created)}</span>}
+     <div className="turn-actions-bar">
+      <button
+       type="button"
+       className="turn-action-btn"
+       title="Fork conversation up to this message"
+       onClick={() => openForkModal(thread, m.id)}
+      >
+       <GitFork size={11}/>
+       <span>Fork</span>
+      </button>
+      <button
+       type="button"
+       className="turn-action-btn"
+       title="Edit message"
+       onClick={() => {
+        setEditingMessageId(m.id);
+        setEditingText(m.text || '');
+       }}
+      >
+       <Pencil size={11}/>
+       <span>Edit</span>
+      </button>
+      <button
+       type="button"
+       className="turn-action-btn turn-action-del"
+       title="Delete message"
+       onClick={() => setConfirmDeleteMessageId(m.id)}
+      >
+       <Trash2 size={11}/>
+       <span>Delete</span>
+      </button>
+     </div>
+    </header>
+    {runThinking && <ThinkingBlock text={runThinking} isLive={false} defaultOpen={false}/>}
+    {isEditing ? (
+     <div className="message-edit-box">
+      <textarea
+       rows={4}
+       value={editingText}
+       onChange={e => setEditingText(e.target.value)}
+       autoFocus
+      />
+      <div className="toolbar-actions" style={{ justifyContent: 'flex-end', gap: 6, marginTop: 4 }}>
+       <button
+        type="button"
+        className="btn btn-xs btn-secondary"
+        onClick={() => setEditingMessageId(null)}
+       >
+        Cancel
+       </button>
+       <button
+        type="button"
+        className="btn btn-xs btn-primary"
+        disabled={busy || !editingText.trim()}
+        onClick={() => void saveEditedMessage(m.id)}
+       >
+        Save
+       </button>
+      </div>
+     </div>
+    ) : (
+     <>
+      <Markdown>{m.text}</Markdown>
+      <MessageAttachments images={m.images} attachments={m.attachments}/>
+     </>
+    )}
+    {associatedJobs.length > 0 && (
+     <div className="admin-session-cards stack-xs" style={{ marginTop: '0.75rem' }}>
+      {associatedJobs.map((j: Item) => {
+       const proj = state.projects?.find((p: Item) => p.id === j.projectId);
+       const repo = state.repos?.find((r: Item) => r.id === j.repoId);
+       return (
+        <div key={j.id} className="admin-session-card">
+         <div className="admin-session-card-left">
+          <div className="admin-session-card-title-row">
+           <Sparkles size={14} style={{ color: 'var(--accent)' }}/>
+           <strong style={{ fontSize: '13px' }}>{j.title}</strong>
+           <span className="tag tag-sm" style={{ textTransform: 'capitalize' }}>{j.status}</span>
+          </div>
+          <div className="admin-session-card-meta muted" style={{ fontSize: '12px' }}>
+           <Dot status={j.status}/>
+           <span>Project: <strong>{proj?.name || 'Orchestra'}</strong></span>
+           {repo && <span>· Repo: <strong>{repo.name}</strong></span>}
+           <span>· Kind: {j.kind}</span>
+          </div>
+         </div>
+         <button
+          type="button"
+          className="btn btn-sm btn-primary"
+          onClick={() => onJob(j.id)}
+          style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}
+         >
+          <span>Open Session</span>
+          <ExternalLink size={12}/>
+         </button>
+        </div>
+       );
+      })}
+     </div>
+    )}
+   </article>
+  );
+ };
+
+ const renderRunTurn = (r: Item) => {
+  const thinkingText = r.events?.filter((e: Item) => e.type === 'thinking').map((e: Item) => e.data).join('');
+  const textOutput = r.events?.filter((e: Item) => e.type === 'text').map((e: Item) => e.data).join('') || r.events?.find((e: Item) => e.type === 'result')?.data;
+  const correlatedTools: Item[] = [];
+  for (const e of r.events || []) {
+   if (e.type === 'tool') {
+    correlatedTools.push({ toolCallId: e.data?.toolCallId, name: e.data?.name || 'tool', args: e.data?.args, partialUpdate: '' });
+   } else if (e.type === 'tool_update') {
+    const id = e.data?.toolCallId;
+    const target = correlatedTools.slice().reverse().find(t => id ? t.toolCallId === id : true);
+    if (target) {
+     if (e.data?.args) target.args = e.data.args;
+     target.partialUpdate = e.data?.partialResult || (target.partialUpdate || '') + (typeof e.data?.update === 'string' ? e.data.update : JSON.stringify(e.data?.update || ''));
+    }
+   } else if (e.type === 'tool_result') {
+    const id = e.data?.toolCallId;
+    const target = correlatedTools.slice().reverse().find(t => id ? t.toolCallId === id : !t.result);
+    if (target) {
+     target.result = e.data?.result;
+     target.isError = e.data?.isError;
+     target.durationMs = e.data?.durationMs;
+    } else {
+     correlatedTools.push({ toolCallId: id, name: e.data?.name || 'tool', result: e.data?.result, isError: e.data?.isError, durationMs: e.data?.durationMs });
+    }
+   }
+  }
+  const lastEv = r.events?.at(-1);
+  let activityLabel = 'Running…';
+  if (lastEv?.type === 'thinking') activityLabel = 'Reasoning…';
+  else if (correlatedTools.length > 0 && r.status === 'running') {
+   const lastTool = correlatedTools[correlatedTools.length - 1];
+   if (isSubagent(lastTool.name, lastTool.args)) {
+    const subData = parseSubagentInfo(lastTool, true);
+    if (subData) activityLabel = getSubagentActivityText(subData);
+    else activityLabel = 'Subagent active…';
+   } else {
+    activityLabel = `Executing ${lastTool.name}…`;
+   }
+  }
+
+  const activeRunJobs = getJobsForRun(r.id);
+
+  return (
+   <article key={`run-${r.id}`} className="turn turn-agent">
+    <header className="turn-meta">
+     <span className="turn-author">Assistant</span>
+     {r.created && <span className="muted-meta">{ago(r.created)}</span>}
+     <span className="muted-meta">
+      {r.status === 'running' ? (
+       <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+        <Loader2 size={12} className="spin tone-live-text"/>
+        <span>{activityLabel}</span>
+       </span>
+      ) : (
+       <Status value={r.status}/>
+      )}
+     </span>
+    </header>
+
+    {thinkingText && <ThinkingBlock text={thinkingText} isLive={r.status === 'running'} defaultOpen={r.status === 'running'}/>}
+
+    {correlatedTools.map((tool, idx) => {
+     if (isSubagent(tool.name, tool.args)) {
+      return (
+       <SubagentCard
+        key={tool.toolCallId || idx}
+        tool={tool}
+        isRunning={!tool.result && r.status === 'running'}
+        formatToolData={formatToolData}
+       />
+      );
+     }
+     return (
+      <div key={tool.toolCallId || idx} className="admin-tool-pill">
+       <Terminal size={12}/>
+       <code>{tool.name}</code>
+       {tool.args?.command && <small className="muted-meta">{tool.args.command}</small>}
+       {tool.result && <Check size={11} className="tone-ok-text"/>}
+      </div>
+     );
+    })}
+
+    {textOutput && <Markdown>{textOutput}</Markdown>}
+    {r.error && <div className="note note-bad">{r.error}</div>}
+    {activeRunJobs.length > 0 && (
+     <div className="admin-session-cards stack-xs" style={{ marginTop: '0.75rem' }}>
+      {activeRunJobs.map((j: Item) => {
+       const proj = state.projects?.find((p: Item) => p.id === j.projectId);
+       const repo = state.repos?.find((r: Item) => r.id === j.repoId);
+       return (
+        <div key={j.id} className="admin-session-card">
+         <div className="admin-session-card-left">
+          <div className="admin-session-card-title-row">
+           <Sparkles size={14} style={{ color: 'var(--accent)' }}/>
+           <strong style={{ fontSize: '13px' }}>{j.title}</strong>
+           <span className="tag tag-sm" style={{ textTransform: 'capitalize' }}>{j.status}</span>
+          </div>
+          <div className="admin-session-card-meta muted" style={{ fontSize: '12px' }}>
+           <Dot status={j.status}/>
+           <span>Project: <strong>{proj?.name || 'Orchestra'}</strong></span>
+           {repo && <span>· Repo: <strong>{repo.name}</strong></span>}
+           <span>· Kind: {j.kind}</span>
+          </div>
+         </div>
+         <button
+          type="button"
+          className="btn btn-sm btn-primary"
+          onClick={() => onJob(j.id)}
+          style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}
+         >
+          <span>Open Session</span>
+          <ExternalLink size={12}/>
+         </button>
+        </div>
+       );
+      })}
+     </div>
+    )}
+   </article>
+  );
+ };
+
+ const renderCompactionDivider = (c: Item) => {
+  return (
+   <div key={`compact-${c.id || c.timestamp}`} className="chat-compaction-divider">
+    <div className="chat-compaction-divider-line"/>
+    <div className="chat-compaction-badge" title={c.summary || 'Session history summarized to conserve context'}>
+     <Minimize2 size={11}/>
+     <span>Context compacted ({c.tokensBefore ? `${formatTokenCount(c.tokensBefore)} tokens summarized` : 'History summarized'})</span>
+    </div>
+    <div className="chat-compaction-divider-line"/>
+   </div>
+  );
+ };
 
  return (
   <div className="assistant-page">
@@ -367,31 +948,7 @@ export function SystemAssistantPage({
       threadGroups.map(group => (
        <div key={group.title} className="assistant-group">
         <span className="assistant-group-title">{group.title}</span>
-        {group.items.map((t: Item) => (
-         <button
-          key={t.id}
-          type="button"
-          className={`assistant-thread-btn ${t.id === thread ? 'active' : ''}`}
-          onClick={() => selectThread(t.id)}
-         >
-          <MessageSquare size={13} style={{ flexShrink: 0, marginTop: 2 }}/>
-          <div className="assistant-thread-info">
-           <span className="assistant-thread-title">{t.title || 'Conversation'}</span>
-           <span className="assistant-thread-date">{ago(t.updated || t.created)}</span>
-          </div>
-          <button
-           type="button"
-           className="icon-btn assistant-thread-del"
-           title="Delete conversation"
-           onClick={e => {
-            e.stopPropagation();
-            setConfirmDeleteThreadId(t.id);
-           }}
-          >
-           <Trash2 size={12}/>
-          </button>
-         </button>
-        ))}
+        {group.items.map(node => renderThreadNode(node))}
        </div>
       ))
      )}
@@ -414,6 +971,18 @@ export function SystemAssistantPage({
       </div>
 
       <div className="assistant-controls-row">
+       <button
+        type="button"
+        className="btn btn-secondary btn-sm"
+        disabled={busy || !thread}
+        title="Fork this conversation into a new session"
+        onClick={() => openForkModal(thread)}
+        style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}
+       >
+        <GitFork size={12}/>
+        <span>Fork</span>
+       </button>
+
        <select
         aria-label="Execution mode"
         className="select-compact"
@@ -450,6 +1019,7 @@ export function SystemAssistantPage({
       <nav className="tabs" style={{ border: 'none', padding: 0 }}>
        {[
         { id: 'chat' as const, label: 'Chat', icon: MessageSquare },
+        { id: 'skills' as const, label: 'Skills', count: data.skills?.length || 0, icon: Sparkles },
         { id: 'approvals' as const, label: 'Approvals', count: pending.length, icon: Shield },
         { id: 'plugins' as const, label: 'Plugins', icon: Package },
         { id: 'work' as const, label: 'Runs', icon: Terminal }
@@ -469,6 +1039,27 @@ export function SystemAssistantPage({
 
       {tab === 'chat' && (
        <div className="assistant-controls-row">
+        <span
+         className="tag"
+         title={`Session Tokens: ${(chat.tokens?.total || 0).toLocaleString()} (Input: ${(chat.tokens?.input || 0).toLocaleString()}, Output: ${(chat.tokens?.output || 0).toLocaleString()}${chat.tokens?.cacheRead ? `, Cache: ${(chat.tokens?.cacheRead || 0).toLocaleString()}` : ''})`}
+         style={{ display: 'inline-flex', alignItems: 'center', gap: 4, cursor: 'default' }}
+        >
+         <Hash size={11} style={{ color: 'var(--accent)' }}/>
+         <span>{formatTokenCount(chat.tokens?.total || 0)} tokens</span>
+        </span>
+
+        <button
+         type="button"
+         className="btn btn-secondary btn-sm"
+         disabled={busy || compacting || !thread || (chat.messages?.length || 0) === 0 || chat.runs?.some((r: Item) => r.status === 'running')}
+         title="Compact session context manually into a summary to reduce token usage"
+         onClick={() => setCompactModal(true)}
+         style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}
+        >
+         {compacting ? <Loader2 size={12} className="spin"/> : <Minimize2 size={12}/>}
+         <span>Compact</span>
+        </button>
+
         <select
          aria-label="Connection"
          className="select-compact"
@@ -515,6 +1106,19 @@ export function SystemAssistantPage({
          {thinkingLevels.map(v => <option key={v} value={v}>Thinking: {thinkingLabel[v]}</option>)}
         </select>
 
+        {data.skills?.filter((s: Item) => s.active).length > 0 && (
+         <button
+          type="button"
+          className="tag"
+          style={{ cursor: 'pointer', border: '1px solid var(--border)', background: 'var(--bg-elevated)', display: 'inline-flex', alignItems: 'center', gap: 4 }}
+          onClick={() => setTab('skills')}
+          title="Click to view and manage active skills"
+         >
+          <Sparkles size={11} style={{ color: 'var(--accent)' }}/>
+          <span>{data.skills.filter((s: Item) => s.active).length} skills active</span>
+         </button>
+        )}
+
         {contextName && (
          <span className="tag" title="Dashboard context provided to assistant">
           Context: {contextName}
@@ -533,10 +1137,20 @@ export function SystemAssistantPage({
      </div>
     )}
 
+    {successNotice && (
+     <div className="note note-ok" style={{ margin: '8px 24px 0', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }} role="status">
+      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+       <CheckCircle2 size={13}/>
+       <span>{successNotice}</span>
+      </span>
+      <button type="button" className="icon-btn" onClick={() => setSuccessNotice(null)}><X size={13}/></button>
+     </div>
+    )}
+
     {/* Tab: Chat */}
     {tab === 'chat' && (
-     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-      <div className="assistant-stream-wrap">
+     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, height: '100%', overflow: 'hidden' }}>
+      <div ref={streamWrapRef} className="assistant-stream-wrap">
        <div className="assistant-stream-inner">
         {!chat.messages.length && (
          <div className="card padded stack-sm" style={{ padding: '2rem 1.5rem', textAlign: 'center' }}>
@@ -549,8 +1163,9 @@ export function SystemAssistantPage({
            {[
             'Inspect active sessions and summarize current progress across projects.',
             'Review open change requests and check test evidence.',
-            'Propose an improvement to Orchestra in a tracked session.',
-            'Inspect deployment health and running containers.'
+            'List available agent skills and show how to use them.',
+            'Create a new agent skill for deployment verification and health checks.',
+            'Propose an improvement to Orchestra in a tracked session.'
            ].map(p => (
             <button key={p} type="button" className="prompt-suggestion" onClick={() => setMessage(p)}>
              <span>{p}</span><ChevronRight size={13}/>
@@ -560,180 +1175,15 @@ export function SystemAssistantPage({
          </div>
         )}
 
-        {chat.messages.map((m: Item) => {
-         const linkedRun = m.runId ? chat.runs.find((r: Item) => r.id === m.runId) : null;
-         const runThinking = linkedRun?.events?.filter((e: Item) => e.type === 'thinking').map((e: Item) => e.data).join('');
-         const associatedJobs = getJobsForRun(m.runId);
-         return (
-          <article key={m.id} className={`turn ${m.role === 'user' ? 'turn-user' : 'turn-agent'}`}>
-           <header className="turn-meta">
-            <span className="turn-author">{m.role === 'user' ? (me.name || 'Admin') : 'Assistant'}</span>
-           </header>
-           {runThinking && <ThinkingBlock text={runThinking} isLive={false} defaultOpen={false}/>}
-           <Markdown>{m.text}</Markdown>
-           <MessageAttachments images={m.images} attachments={m.attachments}/>
-           {associatedJobs.length > 0 && (
-            <div className="admin-session-cards stack-xs" style={{ marginTop: '0.75rem' }}>
-             {associatedJobs.map((j: Item) => {
-              const proj = state.projects?.find((p: Item) => p.id === j.projectId);
-              const repo = state.repos?.find((r: Item) => r.id === j.repoId);
-              return (
-               <div key={j.id} className="admin-session-card">
-                <div className="admin-session-card-left">
-                 <div className="admin-session-card-title-row">
-                  <Sparkles size={14} style={{ color: 'var(--accent)' }}/>
-                  <strong style={{ fontSize: '13px' }}>{j.title}</strong>
-                  <span className="tag tag-sm" style={{ textTransform: 'capitalize' }}>{j.status}</span>
-                 </div>
-                 <div className="admin-session-card-meta muted" style={{ fontSize: '12px' }}>
-                  <Dot status={j.status}/>
-                  <span>Project: <strong>{proj?.name || 'Orchestra'}</strong></span>
-                  {repo && <span>· Repo: <strong>{repo.name}</strong></span>}
-                  <span>· Kind: {j.kind}</span>
-                 </div>
-                </div>
-                <button
-                 type="button"
-                 className="btn btn-sm btn-primary"
-                 onClick={() => onJob(j.id)}
-                 style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}
-                >
-                 <span>Open Session</span>
-                 <ExternalLink size={12}/>
-                </button>
-               </div>
-              );
-             })}
-            </div>
-           )}
-          </article>
-         );
-        })}
-
-        {chat.runs.filter((r: Item) =>
-         r.status === 'running' || r.status === 'failed' || r.status === 'interrupted' || r.status === 'cancelled' ||
-         (!chat.messages.some((m: Item) => m.runId === r.id) && r.events?.some((e: Item) => e.type === 'text' || e.type === 'result'))
-        ).map((r: Item) => {
-         const thinkingText = r.events?.filter((e: Item) => e.type === 'thinking').map((e: Item) => e.data).join('');
-         const textOutput = r.events?.filter((e: Item) => e.type === 'text').map((e: Item) => e.data).join('') || r.events?.find((e: Item) => e.type === 'result')?.data;
-         const correlatedTools: Item[] = [];
-         for (const e of r.events || []) {
-          if (e.type === 'tool') {
-           correlatedTools.push({ toolCallId: e.data?.toolCallId, name: e.data?.name || 'tool', args: e.data?.args, partialUpdate: '' });
-          } else if (e.type === 'tool_update') {
-           const id = e.data?.toolCallId;
-           const target = correlatedTools.slice().reverse().find(t => id ? t.toolCallId === id : true);
-           if (target) {
-            if (e.data?.args) target.args = e.data.args;
-            target.partialUpdate = e.data?.partialResult || (target.partialUpdate || '') + (typeof e.data?.update === 'string' ? e.data.update : JSON.stringify(e.data?.update || ''));
-           }
-          } else if (e.type === 'tool_result') {
-           const id = e.data?.toolCallId;
-           const target = correlatedTools.slice().reverse().find(t => id ? t.toolCallId === id : !t.result);
-           if (target) {
-            target.result = e.data?.result;
-            target.isError = e.data?.isError;
-            target.durationMs = e.data?.durationMs;
-           } else {
-            correlatedTools.push({ toolCallId: id, name: e.data?.name || 'tool', result: e.data?.result, isError: e.data?.isError, durationMs: e.data?.durationMs });
-           }
-          }
+        {timelineEntries.map((entry) => {
+         if (entry.kind === 'message') {
+          return renderMessageTurn(entry.data);
+         } else if (entry.kind === 'run') {
+          return renderRunTurn(entry.data);
+         } else if (entry.kind === 'compaction') {
+          return renderCompactionDivider(entry.data);
          }
-         const lastEv = r.events?.at(-1);
-         let activityLabel = 'Running…';
-         if (lastEv?.type === 'thinking') activityLabel = 'Reasoning…';
-         else if (correlatedTools.length > 0 && r.status === 'running') {
-          const lastTool = correlatedTools[correlatedTools.length - 1];
-          if (isSubagent(lastTool.name, lastTool.args)) {
-           const subData = parseSubagentInfo(lastTool, true);
-           if (subData) activityLabel = getSubagentActivityText(subData);
-           else activityLabel = 'Subagent active…';
-          } else {
-           activityLabel = `Executing ${lastTool.name}…`;
-          }
-         }
-
-         return (
-          <article key={r.id} className="turn turn-agent">
-           <header className="turn-meta">
-            <span className="turn-author">Assistant</span>
-            <span className="muted-meta">
-             {r.status === 'running' ? (
-              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
-               <Loader2 size={12} className="spin tone-live-text"/>
-               <span>{activityLabel}</span>
-              </span>
-             ) : (
-              <Status value={r.status}/>
-             )}
-            </span>
-           </header>
-
-           {thinkingText && <ThinkingBlock text={thinkingText} isLive={r.status === 'running'} defaultOpen={r.status === 'running'}/>}
-
-           {correlatedTools.map((tool, idx) => {
-            if (isSubagent(tool.name, tool.args)) {
-             return (
-              <SubagentCard
-               key={tool.toolCallId || idx}
-               tool={tool}
-               isRunning={!tool.result && r.status === 'running'}
-               formatToolData={formatToolData}
-              />
-             );
-            }
-            return (
-             <div key={tool.toolCallId || idx} className="admin-tool-pill">
-              <Terminal size={12}/>
-              <code>{tool.name}</code>
-              {tool.args?.command && <small className="muted-meta">{tool.args.command}</small>}
-              {tool.result && <Check size={11} className="tone-ok-text"/>}
-             </div>
-            );
-           })}
-
-           {textOutput && <Markdown>{textOutput}</Markdown>}
-           {r.error && <div className="note note-bad">{r.error}</div>}
-           {(() => {
-            const activeRunJobs = getJobsForRun(r.id);
-            if (!activeRunJobs.length) return null;
-            return (
-             <div className="admin-session-cards stack-xs" style={{ marginTop: '0.75rem' }}>
-              {activeRunJobs.map((j: Item) => {
-               const proj = state.projects?.find((p: Item) => p.id === j.projectId);
-               const repo = state.repos?.find((r: Item) => r.id === j.repoId);
-               return (
-                <div key={j.id} className="admin-session-card">
-                 <div className="admin-session-card-left">
-                  <div className="admin-session-card-title-row">
-                   <Sparkles size={14} style={{ color: 'var(--accent)' }}/>
-                   <strong style={{ fontSize: '13px' }}>{j.title}</strong>
-                   <span className="tag tag-sm" style={{ textTransform: 'capitalize' }}>{j.status}</span>
-                  </div>
-                  <div className="admin-session-card-meta muted" style={{ fontSize: '12px' }}>
-                   <Dot status={j.status}/>
-                   <span>Project: <strong>{proj?.name || 'Orchestra'}</strong></span>
-                   {repo && <span>· Repo: <strong>{repo.name}</strong></span>}
-                   <span>· Kind: {j.kind}</span>
-                  </div>
-                 </div>
-                 <button
-                  type="button"
-                  className="btn btn-sm btn-primary"
-                  onClick={() => onJob(j.id)}
-                  style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}
-                 >
-                  <span>Open Session</span>
-                  <ExternalLink size={12}/>
-                 </button>
-                </div>
-               );
-              })}
-             </div>
-            );
-           })()}
-          </article>
-         );
+         return null;
         })}
         <div ref={end}/>
        </div>
@@ -959,6 +1409,117 @@ export function SystemAssistantPage({
      </div>
     )}
 
+    {/* Tab: Skills */}
+    {tab === 'skills' && (
+     <div className="admin-scroll-pane stack-md" style={{ padding: '20px 24px', maxWidth: 960, margin: '0 auto', width: '100%' }}>
+      <div className="section-bar">
+       <div>
+        <h2 style={{ fontSize: '15px', fontWeight: 650, margin: 0 }}>Agent Skills & Guidelines</h2>
+        <small className="muted">Active skills provide specialized instructions and domain workflows to System Assistant and project agents.</small>
+       </div>
+       <button
+        type="button"
+        className="btn btn-sm btn-primary"
+        onClick={() => setNewSkillModal(true)}
+       >
+        <Plus size={13}/>
+        <span>New skill</span>
+       </button>
+      </div>
+
+      {(!data.skills || data.skills.length === 0) ? (
+       <div className="card padded" style={{ textAlign: 'center', padding: '2rem 1rem' }}>
+        <Sparkles size={24} style={{ margin: '0 auto', color: 'var(--accent)' }}/>
+        <h3 style={{ fontSize: 14, fontWeight: 600, marginTop: 8 }}>No agent skills yet</h3>
+        <p className="muted" style={{ maxWidth: 480, margin: '4px auto 16px', fontSize: 13 }}>
+         Create reusable skills or instruct System Assistant in chat to create skills for you.
+        </p>
+        <button
+         type="button"
+         className="btn btn-sm btn-primary"
+         onClick={() => setNewSkillModal(true)}
+        >
+         <Plus size={13}/>
+         <span>Create first skill</span>
+        </button>
+       </div>
+      ) : (
+       <div className="stack-sm">
+        {data.skills.map((s: Item) => (
+         <article key={s.id} className="card padded stack-xs">
+          <div className="section-bar">
+           <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            <strong><code>{s.name}</code></strong>
+            <span className={`tag ${s.active ? 'tag-accent' : ''}`}>
+             {s.active ? 'Active' : 'Draft'}
+            </span>
+            <span className="muted-meta" style={{ fontSize: 11 }}>v{s.version || 1}</span>
+            {s.projectId ? (
+             <span className="tag">
+              {state.projects?.find((p: Item) => p.id === s.projectId)?.name || 'Project'}
+             </span>
+            ) : (
+             <span className="tag">Workspace-wide</span>
+            )}
+           </div>
+           <div className="toolbar-actions">
+            <button
+             type="button"
+             className="btn btn-xs btn-secondary"
+             onClick={() => {
+              setTab('chat');
+              setMessage(`Please review and apply the "${s.name}" skill.`);
+             }}
+             title="Ask assistant to use this skill"
+            >
+             <Sparkles size={11}/>
+             <span>Use in chat</span>
+            </button>
+            <button
+             type="button"
+             className="btn btn-xs"
+             onClick={() => void perform(async () => {
+              if (s.active) {
+               await api(`/resources/${s.id}`, 'PATCH', { active: false });
+              } else {
+               await api(`/resources/${s.id}/activate`, 'POST', {});
+              }
+             })}
+            >
+             {s.active ? 'Deactivate' : 'Activate'}
+            </button>
+            <button
+             type="button"
+             className="icon-btn"
+             title="Delete skill"
+             onClick={() => void perform(() => api(`/resources/${s.id}`, 'DELETE'))}
+            >
+             <Trash2 size={12}/>
+            </button>
+           </div>
+          </div>
+
+          {s.description && (
+           <p style={{ margin: '2px 0', fontSize: 13, color: 'var(--text-secondary)' }}>
+            {s.description}
+           </p>
+          )}
+
+          <details style={{ marginTop: 4 }}>
+           <summary className="muted-meta" style={{ cursor: 'pointer', fontSize: 12 }}>
+            View skill instructions ({s.content?.length || 0} chars)
+           </summary>
+           <pre className="code-snippet" style={{ maxHeight: 240, overflowY: 'auto', marginTop: 6, fontSize: 12 }}>
+            {s.content}
+           </pre>
+          </details>
+         </article>
+        ))}
+       </div>
+      )}
+     </div>
+    )}
+
     {/* Tab: Runs */}
     {tab === 'work' && (
      <div className="admin-scroll-pane stack-md" style={{ padding: '20px 24px', maxWidth: 960, margin: '0 auto', width: '100%' }}>
@@ -1002,6 +1563,187 @@ export function SystemAssistantPage({
      onConfirm={() => deleteAction(confirmDeleteActionId)}
      onClose={() => setConfirmDeleteActionId(null)}
     />
+   )}
+
+   {/* Confirm delete message modal */}
+   {confirmDeleteMessageId && (
+    <Confirm
+     title="Delete message"
+     body="Permanently remove this message from the conversation?"
+     danger
+     action="Delete"
+     onConfirm={() => deleteMessage(confirmDeleteMessageId)}
+     onClose={() => setConfirmDeleteMessageId(null)}
+    />
+   )}
+
+   {/* Fork conversation modal */}
+   {forkModal && (
+    <Modal
+     title="Fork into separate session"
+     onClose={() => setForkModal(null)}
+     footer={
+      <>
+       <button type="button" className="btn btn-secondary" onClick={() => setForkModal(null)}>
+        Cancel
+       </button>
+       <button
+        type="button"
+        className="btn btn-primary"
+        disabled={busy || !forkModal.title.trim()}
+        onClick={() => void handleForkSubmit()}
+       >
+        <GitFork size={13}/>
+        <span>Create Fork</span>
+       </button>
+      </>
+     }
+    >
+     <div className="stack-sm">
+      <p className="muted" style={{ fontSize: 13, margin: 0 }}>
+       {forkModal.messageId
+        ? 'Fork this conversation starting up to the selected message into a new branch.'
+        : 'Fork the complete conversation into a new separate branch.'}
+      </p>
+      <div>
+       <label className="field-label">Fork session title</label>
+       <input
+        type="text"
+        value={forkModal.title}
+        onChange={e => setForkModal({ ...forkModal, title: e.target.value })}
+        autoFocus
+        onKeyDown={e => {
+         if (e.key === 'Enter') {
+          e.preventDefault();
+          void handleForkSubmit();
+         }
+        }}
+       />
+      </div>
+     </div>
+    </Modal>
+   )}
+
+   {/* Create new skill modal */}
+   {newSkillModal && (
+    <Modal
+     title="Create Agent Skill"
+     onClose={() => setNewSkillModal(false)}
+     footer={
+      <>
+       <button type="button" className="btn btn-secondary" onClick={() => setNewSkillModal(false)}>
+        Cancel
+       </button>
+       <button
+        type="button"
+        className="btn btn-primary"
+        disabled={busy || !skillName.trim() || !skillContent.trim()}
+        onClick={() => void createSkill()}
+       >
+        <Sparkles size={13}/>
+        <span>Save Skill</span>
+       </button>
+      </>
+     }
+    >
+     <div className="stack-sm">
+      <div className="form-grid-2">
+       <div>
+        <label className="field-label">Skill Name (identifier)</label>
+        <input
+         required
+         placeholder="e.g. deploy-verification"
+         value={skillName}
+         onChange={e => setSkillName(e.target.value.toLowerCase().replace(/[^a-z0-9_-]/g, '-'))}
+        />
+       </div>
+       <div>
+        <label className="field-label">Scope</label>
+        <select value={skillProject} onChange={e => setSkillProject(e.target.value)}>
+         <option value="">Workspace-wide (All projects)</option>
+         {state.projects?.map((p: Item) => (
+          <option key={p.id} value={p.id}>{p.name}</option>
+         ))}
+        </select>
+       </div>
+      </div>
+      <div>
+       <label className="field-label">Description</label>
+       <input
+        placeholder="Brief summary of when and how this skill is used"
+        value={skillDesc}
+        onChange={e => setSkillDesc(e.target.value)}
+       />
+      </div>
+      <div>
+       <label className="field-label">Skill Instructions & Content</label>
+       <textarea
+        required
+        rows={7}
+        placeholder="Detailed instructions, checklist steps, guidelines, or domain rules..."
+        value={skillContent}
+        onChange={e => setSkillContent(e.target.value)}
+       />
+      </div>
+      <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontSize: 13 }}>
+       <input
+        type="checkbox"
+        checked={skillActive}
+        onChange={e => setSkillActive(e.target.checked)}
+       />
+       <span>Activate skill immediately for assistant sessions</span>
+      </label>
+     </div>
+    </Modal>
+   )}
+
+   {/* Compact session modal */}
+   {compactModal && (
+    <Modal
+     title="Compact Session Context"
+     onClose={() => setCompactModal(false)}
+     footer={
+      <>
+       <button type="button" className="btn btn-secondary" onClick={() => setCompactModal(false)}>
+        Cancel
+       </button>
+       <button
+        type="button"
+        className="btn btn-primary"
+        disabled={compacting}
+        onClick={() => void handleCompact()}
+       >
+        {compacting ? <Loader2 size={13} className="spin"/> : <Minimize2 size={13}/>}
+        <span>Compact Context</span>
+       </button>
+      </>
+     }
+    >
+     <div className="stack-sm">
+      <p className="muted" style={{ fontSize: 13, margin: 0 }}>
+       Compact earlier conversation messages into a concise summary to reduce context and token usage. Recent turns will be retained.
+      </p>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13 }}>
+       <span className="muted">Current session tokens:</span>
+       <strong>{(chat.tokens?.total || 0).toLocaleString()}</strong>
+      </div>
+      <div>
+       <label className="field-label">Focus instructions (optional)</label>
+       <input
+        placeholder="e.g. Keep key decisions, job IDs, and deployment instructions"
+        value={compactInstructions}
+        onChange={e => setCompactInstructions(e.target.value)}
+        autoFocus
+        onKeyDown={e => {
+         if (e.key === 'Enter') {
+          e.preventDefault();
+          void handleCompact();
+         }
+        }}
+       />
+      </div>
+     </div>
+    </Modal>
    )}
   </div>
  );

@@ -26,12 +26,16 @@ export function NewSessionModal({
  defaultChangeId,
  defaultKind='implement',
  defaultAgentId='',
+ defaultTitle='',
+ defaultPrompt='',
  onClose
 }:{
  defaultRepoId?:string,
  defaultChangeId?:string,
  defaultKind?:string,
  defaultAgentId?:string,
+ defaultTitle?:string,
+ defaultPrompt?:string,
  onClose:()=>void
 }){
  const {go,refresh}=useWorkspace();
@@ -42,6 +46,8 @@ export function NewSessionModal({
     defaultChangeId={defaultChangeId}
     defaultKind={defaultKind}
     defaultAgentId={defaultAgentId}
+    defaultTitle={defaultTitle}
+    defaultPrompt={defaultPrompt}
     autoFocus
     onCancel={onClose}
     onCreated={async jobId=>{

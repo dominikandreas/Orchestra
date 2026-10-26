@@ -665,7 +665,7 @@ export function SystemAssistantPage({
   const associatedJobs = getJobsForRun(m.runId);
   const isEditing = editingMessageId === m.id;
   return (
-   <article key={`msg-${m.id}`} className={`turn ${m.role === 'user' ? 'turn-user' : 'turn-agent'}`}>
+   <article key={`msg-${m.id}`} className={cx('turn', m.role === 'user' ? 'turn-user' : 'turn-agent', isEditing && 'editing')}>
     <header className="turn-meta">
      <span className="turn-author">{m.role === 'user' ? (me.name || 'Admin') : 'Assistant'}</span>
      {m.created && <span className="muted-meta">{ago(m.created)}</span>}
@@ -711,7 +711,7 @@ export function SystemAssistantPage({
        onChange={e => setEditingText(e.target.value)}
        autoFocus
       />
-      <div className="toolbar-actions" style={{ justifyContent: 'flex-end', gap: 6, marginTop: 4 }}>
+      <div className="message-edit-actions">
        <button
         type="button"
         className="btn btn-xs btn-secondary"
@@ -725,7 +725,8 @@ export function SystemAssistantPage({
         disabled={busy || !editingText.trim()}
         onClick={() => void saveEditedMessage(m.id)}
        >
-        Save
+        <Send size={11}/>
+        <span>Save & Send</span>
        </button>
       </div>
      </div>
@@ -997,63 +998,72 @@ export function SystemAssistantPage({
    {/* Right Main Pane */}
    <main className="assistant-main-pane">
     <header className="assistant-header">
-     <div className="assistant-header-left">
-      <button
-       type="button"
-       className="icon-btn"
-       aria-label={sidebarOpen ? 'Hide past chats' : 'Show past chats'}
-       title={sidebarOpen ? 'Hide past chats' : 'Show past chats'}
-       onClick={() => setSidebarOpen(o => !o)}
-      >
-       {sidebarOpen ? <PanelLeftClose size={15}/> : <PanelLeftOpen size={15}/>}
-      </button>
+     <div className="assistant-header-top">
+      <div className="assistant-header-left">
+       <button
+        type="button"
+        className="icon-btn"
+        aria-label={sidebarOpen ? 'Hide past chats' : 'Show past chats'}
+        title={sidebarOpen ? 'Hide past chats' : 'Show past chats'}
+        onClick={() => setSidebarOpen(o => !o)}
+       >
+        {sidebarOpen ? <PanelLeftClose size={15}/> : <PanelLeftOpen size={15}/>}
+       </button>
 
-      <div className="assistant-header-title-wrap">
-       <h1 className="assistant-header-title" title={currentThread?.title || 'System Assistant'}>
-        {currentThread?.title || 'System Assistant'}
-       </h1>
-       {currentThread?.updated && (
-        <span className="muted-meta assistant-header-time">
-         {ago(currentThread.updated)}
-        </span>
-       )}
+       <div className="assistant-header-title-wrap">
+        <h1 className="assistant-header-title" title={currentThread?.title || 'System Assistant'}>
+         {currentThread?.title || 'System Assistant'}
+        </h1>
+        {currentThread?.updated && (
+         <span className="muted-meta assistant-header-time">
+          {ago(currentThread.updated)}
+         </span>
+        )}
+       </div>
+
+       <button
+        type="button"
+        className="icon-btn"
+        disabled={busy || !thread}
+        title="Fork conversation into a new session"
+        onClick={() => openForkModal(thread)}
+       >
+        <GitFork size={13}/>
+       </button>
       </div>
 
-      <button
-       type="button"
-       className="icon-btn"
-       disabled={busy || !thread}
-       title="Fork conversation into a new session"
-       onClick={() => openForkModal(thread)}
-      >
-       <GitFork size={13}/>
-      </button>
+      <nav className="assistant-header-tabs">
+       {[
+        { id: 'chat' as const, label: 'Chat', icon: MessageSquare },
+        { id: 'skills' as const, label: 'Skills', count: data.skills?.filter((s: Item) => s.active)?.length || 0, icon: Sparkles },
+        { id: 'approvals' as const, label: 'Approvals', count: pending.length, icon: Shield },
+        { id: 'plugins' as const, label: 'Plugins', icon: Package },
+        { id: 'work' as const, label: 'Runs', count: data.selfJobs?.length || 0, icon: Terminal }
+       ].map(t => (
+        <button
+         key={t.id}
+         type="button"
+         className={cx('assistant-nav-tab', tab === t.id && 'active')}
+         onClick={() => setTab(t.id)}
+        >
+         <t.icon size={13}/>
+         <span>{t.label}</span>
+         {t.count !== undefined && t.count > 0 && <span className="nav-badge">{t.count}</span>}
+        </button>
+       ))}
+      </nav>
      </div>
 
-     <nav className="assistant-header-tabs">
-      {[
-       { id: 'chat' as const, label: 'Chat', icon: MessageSquare },
-       { id: 'skills' as const, label: 'Skills', count: data.skills?.filter((s: Item) => s.active)?.length || 0, icon: Sparkles },
-       { id: 'approvals' as const, label: 'Approvals', count: pending.length, icon: Shield },
-       { id: 'plugins' as const, label: 'Plugins', icon: Package },
-       { id: 'work' as const, label: 'Runs', count: data.selfJobs?.length || 0, icon: Terminal }
-      ].map(t => (
-       <button
-        key={t.id}
-        type="button"
-        className={cx('assistant-nav-tab', tab === t.id && 'active')}
-        onClick={() => setTab(t.id)}
-       >
-        <t.icon size={13}/>
-        <span>{t.label}</span>
-        {t.count !== undefined && t.count > 0 && <span className="nav-badge">{t.count}</span>}
-       </button>
-      ))}
-     </nav>
+     {tab === 'chat' && (
+      <div className="assistant-sub-toolbar">
+       <div className="assistant-sub-toolbar-left">
+        <span className="muted-meta" style={{ fontSize: 11, display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+         <Sparkles size={11} style={{ color: 'var(--accent)' }}/>
+         <span>System Assistant</span>
+        </span>
+       </div>
 
-     <div className="assistant-header-right">
-      {tab === 'chat' && (
-       <>
+       <div className="assistant-sub-toolbar-right">
         <select
          aria-label="Model"
          className="select-compact assistant-model-select"
@@ -1116,9 +1126,9 @@ export function SystemAssistantPage({
          <span>{formatTokenCount(chat.tokens?.total || 0)}</span>
          <span className="assistant-tokens-compact-hint">Compact</span>
         </button>
-       </>
-      )}
-     </div>
+       </div>
+      </div>
+     )}
     </header>
 
     {error && (
@@ -1182,41 +1192,88 @@ export function SystemAssistantPage({
       </div>
 
       <div className="assistant-composer-wrap">
+       {editingMessageId && (
+        <div className="assistant-composer-editing-banner">
+         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+          <Pencil size={12} style={{ color: 'var(--accent)' }}/>
+          <span>Editing previous message</span>
+         </span>
+         <button
+          type="button"
+          className="btn btn-xs btn-secondary"
+          onClick={() => {
+           setEditingMessageId(null);
+           setEditingText('');
+          }}
+         >
+          Cancel edit
+         </button>
+        </div>
+       )}
        <form
         className="assistant-composer-inner"
-        onSubmit={e => { e.preventDefault(); void send(); }}
+        onSubmit={e => {
+         e.preventDefault();
+         if (editingMessageId) {
+          void saveEditedMessage(editingMessageId);
+         } else {
+          void send();
+         }
+        }}
         onDrop={attachmentState.handleDrop}
         onDragOver={e => e.preventDefault()}
        >
         <textarea
-         rows={2}
-         placeholder="Instruct System Assistant… (⌘Enter to send)"
-         value={message}
-         onChange={e => setMessage(e.target.value)}
+         rows={editingMessageId ? 3 : 2}
+         placeholder={editingMessageId ? "Edit your message… (⌘Enter to save & send)" : "Instruct System Assistant… (⌘Enter to send)"}
+         value={editingMessageId ? editingText : message}
+         onChange={e => {
+          if (editingMessageId) {
+           setEditingText(e.target.value);
+          } else {
+           setMessage(e.target.value);
+          }
+         }}
          onKeyDown={e => {
           if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
            e.preventDefault();
-           void send();
+           if (editingMessageId) {
+            void saveEditedMessage(editingMessageId);
+           } else {
+            void send();
+           }
           }
          }}
         />
 
         <div className="admin-composer-foot">
          <div className="toolbar-actions">
-          <AttachmentInput
-           images={attachmentState.images}
-           attachments={attachmentState.attachments}
-           onAdd={attachmentState.addFiles}
-           onRemoveImage={attachmentState.removeImage}
-           onRemoveAttachment={attachmentState.removeAttachment}
-           disabled={busy}
-          />
-          <VoiceButton
-           disabled={busy}
-           onTranscript={chunk => setMessage(m => m ? `${m.trimEnd()} ${chunk}` : chunk)}
-          />
+          {!editingMessageId && (
+           <>
+            <AttachmentInput
+             images={attachmentState.images}
+             attachments={attachmentState.attachments}
+             onAdd={attachmentState.addFiles}
+             onRemoveImage={attachmentState.removeImage}
+             onRemoveAttachment={attachmentState.removeAttachment}
+             disabled={busy}
+            />
+            <VoiceButton
+             disabled={busy}
+             onTranscript={chunk => setMessage(m => m ? `${m.trimEnd()} ${chunk}` : chunk)}
+            />
+           </>
+          )}
          </div>
-         {running ? (
+         {editingMessageId ? (
+          <button
+           type="submit"
+           className="btn btn-sm btn-primary"
+           disabled={busy || !editingText.trim()}
+          >
+           <Send size={12}/><span>Save & Send</span>
+          </button>
+         ) : running ? (
           <button
            type="button"
            className="btn btn-sm btn-danger"
